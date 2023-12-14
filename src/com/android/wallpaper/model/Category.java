@@ -20,6 +20,8 @@ import android.content.Context;
 import android.graphics.drawable.Drawable;
 import android.text.TextUtils;
 
+import androidx.annotation.Nullable;
+
 import com.android.wallpaper.asset.Asset;
 
 /**
@@ -44,15 +46,19 @@ public abstract class Category {
     }
 
     /**
+     * Returns whether user created wallpapers are supported or not.
+     */
+    public boolean supportsUserCreatedWallpapers() {
+        return false;
+    }
+
+    /**
      * Shows the UI for picking wallpapers within this category.
      *
      * @param srcActivity
-     * @param factory     A factory for showing the picker activity for within this app. Only used for
-     *                    certain Category implementations that show a picker in-app (as opposed to launching an
-     *                    external intent).
      * @param requestCode Request code to pass in when starting the picker activity.
      */
-    public abstract void show(Activity srcActivity, PickerIntentFactory factory, int requestCode);
+    public abstract void show(Activity srcActivity, int requestCode);
 
     /**
      * Returns true if this Category contains an enumerable set of wallpapers which can be presented
@@ -61,6 +67,25 @@ public abstract class Category {
      */
     public boolean isEnumerable() {
         return false;
+    }
+
+    /**
+     * Returns true if this category contains a single Wallpaper, which could then be retrieved
+     * via {@link #getSingleWallpaper()}
+     */
+    public boolean isSingleWallpaperCategory() {
+        return false;
+    }
+
+    /**
+     * If {@link #isSingleWallpaperCategory()} returned true, this method will return the single
+     * wallpaper contained in this category.
+     * @return a {@link WallpaperInfo} for the one wallpaper in this category, if this category is
+     * a single wallpaper category, or {@code null} otherwise.
+     */
+    @Nullable
+    public WallpaperInfo getSingleWallpaper() {
+        return null;
     }
 
     /**
@@ -133,6 +158,13 @@ public abstract class Category {
      * packageName (this only makes sense if #supportsThirdParty() returns true).
      */
     public boolean containsThirdParty(String packageName) {
+        return false;
+    }
+
+    /**
+     * Returns whether this category supports content that can be added or removed dynamically.
+     */
+    public boolean supportsWallpaperSetUpdates() {
         return false;
     }
 

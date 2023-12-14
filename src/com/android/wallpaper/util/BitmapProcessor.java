@@ -15,13 +15,8 @@
  */
 package com.android.wallpaper.util;
 
-import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
-import android.renderscript.Allocation;
-import android.renderscript.Element;
-import android.renderscript.RenderScript;
-import android.renderscript.ScriptIntrinsicBlur;
 import android.util.Log;
 
 /**
@@ -30,73 +25,28 @@ import android.util.Log;
 public final class BitmapProcessor {
 
     private static final String TAG = "BitmapProcessor";
-    private static final float BLUR_RADIUS = 20f;
     private static final int DOWNSAMPLE = 5;
 
     private BitmapProcessor() {
     }
 
     /**
-     * Function that blurs the content of a bitmap.
+     * Function that transforms a bitmap into a lower resolution.
      *
-     * @param context   the Application Context
      * @param bitmap    the bitmap we want to blur.
      * @param outWidth  the end width of the blurred bitmap.
      * @param outHeight the end height of the blurred bitmap.
      * @return the blurred bitmap.
      */
-    public static Bitmap blur(Context context, Bitmap bitmap, int outWidth,
-            int outHeight) {
-        RenderScript renderScript = RenderScript.create(context);
-        ScriptIntrinsicBlur blur = ScriptIntrinsicBlur.create(renderScript,
-                Element.U8_4(renderScript));
-        Allocation input = null;
-        Allocation output = null;
-        Bitmap inBitmap = null;
-
+    public static Bitmap createLowResBitmap(Bitmap bitmap, int outWidth, int outHeight) {
         try {
             Rect rect = new Rect(0, 0, bitmap.getWidth(), bitmap.getHeight());
             WallpaperCropUtils.fitToSize(rect, outWidth / DOWNSAMPLE, outHeight / DOWNSAMPLE);
 
-            inBitmap = Bitmap.createScaledBitmap(bitmap, rect.width(), rect.height(),
+            return Bitmap.createScaledBitmap(bitmap, rect.width(), rect.height(),
                     true /* filter */);
-
-            // Render script blurs only support ARGB_8888, we need a conversion if we got a
-            // different bitmap config.
-            if (inBitmap.getConfig() != Bitmap.Config.ARGB_8888) {
-                Bitmap oldIn = inBitmap;
-                inBitmap = oldIn.copy(Bitmap.Config.ARGB_8888, false /* isMutable */);
-                oldIn.recycle();
-            }
-            Bitmap outBitmap = Bitmap.createBitmap(inBitmap.getWidth(), inBitmap.getHeight(),
-                    Bitmap.Config.ARGB_8888);
-
-            input = Allocation.createFromBitmap(renderScript, inBitmap,
-                    Allocation.MipmapControl.MIPMAP_NONE, Allocation.USAGE_GRAPHICS_TEXTURE);
-            output = Allocation.createFromBitmap(renderScript, outBitmap);
-
-            blur.setRadius(BLUR_RADIUS);
-            blur.setInput(input);
-            blur.forEach(output);
-            output.copyTo(outBitmap);
-
-            return outBitmap;
-
         } catch (IllegalArgumentException ex) {
             Log.e(TAG, "error while blurring bitmap", ex);
-        } finally {
-            if (input != null) {
-                input.destroy();
-            }
-
-            if (output != null) {
-                output.destroy();
-            }
-
-            blur.destroy();
-            if (inBitmap != null) {
-                inBitmap.recycle();
-            }
         }
 
         return null;

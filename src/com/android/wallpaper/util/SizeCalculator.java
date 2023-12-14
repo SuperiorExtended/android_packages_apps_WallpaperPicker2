@@ -29,17 +29,18 @@ import androidx.annotation.NonNull;
 
 import com.android.systemui.shared.system.QuickStepContract;
 import com.android.wallpaper.R;
-import com.android.wallpaper.module.FormFactorChecker;
-import com.android.wallpaper.module.FormFactorChecker.FormFactor;
-import com.android.wallpaper.module.InjectorProvider;
-
 
 /**
  * Simple utility class that calculates various sizes relative to the display or current
  * configuration.
  */
 public class SizeCalculator {
-    private static final int COLUMN_COUNT_THRESHOLD_DP = 732;
+
+    /**
+     * This parameter is used for comparing the threshold DP of the screen on whether we want a
+     * "fewer columns" configuration or a "more columns" configuration.
+     */
+    private static final int COLUMN_COUNT_THRESHOLD_DP = 820;
 
     /**
      * The number of columns for a "fewer columns" configuration of the category tiles grid.
@@ -52,6 +53,17 @@ public class SizeCalculator {
     private static final int CATEGORY_MORE_COLUMNS = 3;
 
     /**
+     * The number of columns for a "fewer columns" configuration of the featured category tiles
+     * grid.
+     */
+    private static final int FEATURED_CATEGORY_FEWER_COLUMNS = 2;
+
+    /**
+     * The number of columns for a "more columns" configuration of the featured category tiles grid.
+     */
+    private static final int FEATURED_CATEGORY_MORE_COLUMNS = 2;
+
+    /**
      * The number of columns for a "fewer columns" configuration of the individual wallpaper tiles
      * grid.
      */
@@ -62,6 +74,18 @@ public class SizeCalculator {
      * grid.
      */
     private static final int INDIVIDUAL_MORE_COLUMNS = 4;
+
+    /**
+     * The number of columns for a "fewer columns" configuration of the featured individual
+     * wallpaper tiles grid.
+     */
+    private static final int FEATURED_INDIVIDUAL_FEWER_COLUMNS = 2;
+
+    /**
+     * The number of columns for a "more columns" configuration of the featured individual wallpaper
+     * tiles grid.
+     */
+    private static final int FEATURED_INDIVIDUAL_MORE_COLUMNS = 2;
 
     // Suppress default constructor for noninstantiability.
     private SizeCalculator() {
@@ -86,14 +110,33 @@ public class SizeCalculator {
         return getNumIndividualColumns(activity, windowWidthPx);
     }
 
+    /**
+     * Returns the number of columns for a grid of featured individual tiles. Selects from fewer and
+     * more columns based on the width of the activity.
+     */
+    public static int getNumFeaturedIndividualColumns(@NonNull Activity activity) {
+        int windowWidthPx = getActivityWindowWidthPx(activity);
+        return getNumFeaturedIndividualColumns(activity, windowWidthPx);
+    }
+
     private static int getNumCategoryColumns(Activity activity, int windowWidthPx) {
         return getNumColumns(activity, windowWidthPx, CATEGORY_FEWER_COLUMNS,
                 CATEGORY_MORE_COLUMNS);
     }
 
+    private static int getNumFeaturedCategoryColumns(Activity activity, int windowWidthPx) {
+        return getNumColumns(activity, windowWidthPx, FEATURED_CATEGORY_FEWER_COLUMNS,
+                FEATURED_CATEGORY_MORE_COLUMNS);
+    }
+
     private static int getNumIndividualColumns(Activity activity, int windowWidthPx) {
         return getNumColumns(
                 activity, windowWidthPx, INDIVIDUAL_FEWER_COLUMNS, INDIVIDUAL_MORE_COLUMNS);
+    }
+
+    private static int getNumFeaturedIndividualColumns(Activity activity, int windowWidthPx) {
+        return getNumColumns(activity, windowWidthPx, FEATURED_INDIVIDUAL_FEWER_COLUMNS,
+                FEATURED_INDIVIDUAL_MORE_COLUMNS);
     }
 
     private static int getNumColumns(
@@ -107,7 +150,6 @@ public class SizeCalculator {
 
         // Columns should be based on the size of the window, not the size of the display.
         int windowWidthDp = (int) (windowWidthPx / metrics.density);
-
         if (windowWidthDp < COLUMN_COUNT_THRESHOLD_DP) {
             return fewerCount;
         } else {
@@ -119,22 +161,52 @@ public class SizeCalculator {
      * Returns the size of a category grid tile in px.
      */
     public static Point getCategoryTileSize(@NonNull Activity activity) {
-        Context appContext = activity.getApplicationContext();
+        Resources res = activity.getResources();
         int windowWidthPx = getActivityWindowWidthPx(activity);
 
         int columnCount = getNumCategoryColumns(activity, windowWidthPx);
-        return getSquareTileSize(appContext, columnCount, windowWidthPx);
+        return getSquareTileSize(columnCount, windowWidthPx,
+                res.getDimensionPixelSize(R.dimen.grid_item_category_padding_horizontal),
+                res.getDimensionPixelSize(R.dimen.category_grid_edge_space));
+    }
+
+    /**
+     * Returns the size of a featured category grid tile in px.
+     */
+    public static Point getFeaturedCategoryTileSize(@NonNull Activity activity) {
+        Resources res = activity.getResources();
+        int windowWidthPx = getActivityWindowWidthPx(activity);
+
+        int columnCount = getNumFeaturedCategoryColumns(activity, windowWidthPx);
+        return getSquareTileSize(columnCount, windowWidthPx,
+                res.getDimensionPixelSize(R.dimen.grid_item_category_padding_horizontal),
+                res.getDimensionPixelSize(R.dimen.category_grid_edge_space));
     }
 
     /**
      * Returns the size of an individual grid tile for the given activity in px.
      */
     public static Point getIndividualTileSize(@NonNull Activity activity) {
-        Context appContext = activity.getApplicationContext();
+        Resources res = activity.getResources();
         int windowWidthPx = getActivityWindowWidthPx(activity);
 
         int columnCount = getNumIndividualColumns(activity, windowWidthPx);
-        return getSquareTileSize(appContext, columnCount, windowWidthPx);
+        return getSquareTileSize(columnCount, windowWidthPx,
+                res.getDimensionPixelSize(R.dimen.grid_item_individual_padding_horizontal),
+                res.getDimensionPixelSize(R.dimen.wallpaper_grid_edge_space));
+    }
+
+    /**
+     * Returns the size of a featured individual grid tile for the given activity in px.
+     */
+    public static Point getFeaturedIndividualTileSize(@NonNull Activity activity) {
+        Resources res = activity.getResources();
+        int windowWidthPx = getActivityWindowWidthPx(activity);
+
+        int columnCount = getNumFeaturedIndividualColumns(activity, windowWidthPx);
+        return getSquareTileSize(columnCount, windowWidthPx,
+                res.getDimensionPixelSize(R.dimen.grid_item_featured_individual_padding_horizontal),
+                res.getDimensionPixelSize(R.dimen.featured_wallpaper_grid_edge_space));
     }
 
     /**
@@ -157,8 +229,11 @@ public class SizeCalculator {
      * to the screen's corner radius
      */
     public static float getPreviewCornerRadius(@NonNull Activity activity, int previewWidth) {
-        return QuickStepContract.getWindowCornerRadius(Resources.getSystem())
-                / ((float) getActivityWindowWidthPx(activity) / previewWidth);
+        Point screenSize = ScreenSizeCalculator.getInstance().getScreenSize(
+                activity.getWindowManager().getDefaultDisplay());
+
+        return QuickStepContract.getWindowCornerRadius(activity)
+                / ((float) screenSize.x / previewWidth);
     }
 
     /**
@@ -172,17 +247,8 @@ public class SizeCalculator {
         Display display = windowManager.getDefaultDisplay();
         Point screenSizePx = ScreenSizeCalculator.getInstance().getScreenSize(display);
 
-        FormFactorChecker formFactorChecker =
-                InjectorProvider.getInjector().getFormFactorChecker(context);
-        @FormFactor int formFactor = formFactorChecker.getFormFactor();
-
-        int gridPaddingPx;
         Resources res = context.getResources();
-        if (formFactor == FormFactorChecker.FORM_FACTOR_MOBILE) {
-            gridPaddingPx = res.getDimensionPixelSize(R.dimen.grid_padding);
-        } else { // DESKTOP
-            gridPaddingPx = res.getDimensionPixelSize(R.dimen.grid_padding_desktop);
-        }
+        int gridPaddingPx = res.getDimensionPixelSize(R.dimen.grid_padding);
 
         // Note: don't need to multiply by density because getting the dimension from resources
         // already does that.
@@ -202,11 +268,8 @@ public class SizeCalculator {
      * display. The size is determined by these counts with the aspect ratio of 1:1 and is in units
      * of px.
      */
-    private static Point getSquareTileSize(Context context, int columnCount, int windowWidthPx) {
-        Resources res = context.getResources();
-        int gridPaddingPx = res.getDimensionPixelSize(R.dimen.grid_padding);
-        int gridEdgeSpacePx = res.getDimensionPixelSize(R.dimen.grid_edge_space);
-
+    private static Point getSquareTileSize(int columnCount, int windowWidthPx, int gridPaddingPx,
+            int gridEdgeSpacePx) {
         int availableWidthPx = windowWidthPx
                 - gridPaddingPx * 2 * columnCount // Item's left and right padding * column count
                 - gridEdgeSpacePx * 2; // Grid view's left and right edge's space

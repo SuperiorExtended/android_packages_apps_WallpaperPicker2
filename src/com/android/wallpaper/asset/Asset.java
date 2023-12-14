@@ -26,25 +26,32 @@ import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.TransitionDrawable;
-import android.os.AsyncTask;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Display;
 import android.view.View;
 import android.widget.ImageView;
 
 import androidx.annotation.Nullable;
+import androidx.annotation.WorkerThread;
 
 import com.android.wallpaper.module.BitmapCropper;
 import com.android.wallpaper.module.InjectorProvider;
+import com.android.wallpaper.util.RtlUtils;
 import com.android.wallpaper.util.ScreenSizeCalculator;
 import com.android.wallpaper.util.WallpaperCropUtils;
 
 import com.bumptech.glide.load.resource.bitmap.BitmapTransformation;
 
+import java.io.File;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 /**
  * Interface representing an image asset.
  */
 public abstract class Asset {
-
+    private static final ExecutorService sExecutorService = Executors.newSingleThreadExecutor();
     /**
      * Creates and returns a placeholder Drawable instance sized exactly to the target ImageView and
      * filled completely with pixels of the provided placeholder color.
@@ -78,7 +85,50 @@ public abstract class Asset {
      * @param receiver     Called with the decoded bitmap or null if there was an error decoding the
      *                     bitmap.
      */
-    public abstract void decodeBitmap(int targetWidth, int targetHeight, BitmapReceiver receiver);
+    public final void decodeBitmap(int targetWidth, int targetHeight, BitmapReceiver receiver) {
+        decodeBitmap(targetWidth, targetHeight, true, receiver);
+    }
+
+
+    /**
+     * Decodes a bitmap sized for the destination view's dimensions off the main UI thread.
+     *
+     * @param targetWidth  Width of target view in physical pixels.
+     * @param targetHeight Height of target view in physical pixels.
+     * @param hardwareBitmapAllowed if true and it's possible, we'll try to decode into a HARDWARE
+     *                              bitmap
+     * @param receiver     Called with the decoded bitmap or null if there was an error decoding the
+     *                     bitmap.
+     */
+    public abstract void decodeBitmap(int targetWidth, int targetHeight,
+            boolean hardwareBitmapAllowed, BitmapReceiver receiver);
+
+    /**
+     * Copies the asset file to another place.
+     * @param dest  The destination file.
+     */
+    public void copy(File dest) {
+        // no op
+    }
+
+    /**
+     * Decodes a full bitmap.
+     *
+     * @param receiver     Called with the decoded bitmap or null if there was an error decoding the
+     *                     bitmap.
+     */
+    public abstract void decodeBitmap(BitmapReceiver receiver);
+
+    /**
+     * For {@link #decodeBitmap(int, int, BitmapReceiver)} to use when it is done. It then call
+     * the receiver with decoded bitmap in the main thread.
+     *
+     * @param receiver The receiver to handle decoded bitmap or null if decoding failed.
+     * @param decodedBitmap The bitmap which is already decoded.
+     */
+    protected void decodeBitmapCompleted(BitmapReceiver receiver, Bitmap decodedBitmap) {
+        new Handler(Looper.getMainLooper()).post(() -> receiver.onBitmapDecoded(decodedBitmap));
+    }
 
     /**
      * Decodes and downscales a bitmap region off the main UI thread.
@@ -124,6 +174,17 @@ public abstract class Asset {
     public void loadLowResDrawable(Activity activity, ImageView imageView, int placeholderColor,
             BitmapTransformation transformation) {
         // No op
+    }
+
+    /**
+     * Returns a Bitmap from the separate low resolution data source (if there is one) or
+     * {@code null} otherwise.
+     * This could be an I/O operation so DO NOT CALL ON UI THREAD
+     */
+    @WorkerThread
+    @Nullable
+    public Bitmap getLowResBitmap(Context context) {
+        return null;
     }
 
     /**
@@ -216,7 +277,7 @@ public abstract class Asset {
             public void onBitmapDecoded(Bitmap bitmap) {
                 final Resources resources = context.getResources();
 
-                new CenterCropBitmapTask(bitmap, imageView, new BitmapReceiver() {
+                centerCropBitmap(bitmap, imageView, new BitmapReceiver() {
                     @Override
                     public void onBitmapDecoded(@Nullable Bitmap newBitmap) {
                         Drawable[] layers = new Drawable[2];
@@ -247,7 +308,7 @@ public abstract class Asset {
                             drawableLoadedListener.onDrawableLoaded();
                         }
                     }
-                }).execute();
+                });
             }
         });
     }
@@ -261,8 +322,11 @@ public abstract class Asset {
      * @param imageView        ImageView which is the target view of this asset.
      * @param placeholderColor Color of placeholder set to ImageView while waiting for image to
      *                         load.
+     * @param offsetToStart    true to let the preview show from the start of the image, false to
+     *                         center-aligned to the image.
      */
-    public void loadPreviewImage(Activity activity, ImageView imageView, int placeholderColor) {
+    public void loadPreviewImage(Activity activity, ImageView imageView, int placeholderColor,
+            boolean offsetToStart) {
         boolean needsTransition = imageView.getDrawable() == null;
         Drawable placeholderDrawable = new ColorDrawable(placeholderColor);
         if (needsTransition) {
@@ -270,6 +334,11 @@ public abstract class Asset {
         }
 
         decodeRawDimensions(activity, dimensions -> {
+            // TODO (b/286404249): A proper fix here would be to find out why the
+            //  leak happens in first place
+            if (activity.isDestroyed()) {
+                return;
+            }
             if (dimensions == null) {
                 loadDrawable(activity, imageView, placeholderColor);
                 return;
@@ -279,40 +348,47 @@ public abstract class Asset {
             Point screenSize = ScreenSizeCalculator.getInstance().getScreenSize(defaultDisplay);
             Rect visibleRawWallpaperRect =
                     WallpaperCropUtils.calculateVisibleRect(dimensions, screenSize);
-            adjustCropRect(activity, dimensions, visibleRawWallpaperRect);
+
+            // TODO(b/264234793): Make offsetToStart general support or for the specific asset.
+            adjustCropRect(activity, dimensions, visibleRawWallpaperRect, offsetToStart);
 
             BitmapCropper bitmapCropper = InjectorProvider.getInjector().getBitmapCropper();
             bitmapCropper.cropAndScaleBitmap(this, /* scale= */ 1f, visibleRawWallpaperRect,
-                    WallpaperCropUtils.isRtl(activity),
+                    RtlUtils.isRtl(activity),
                     new BitmapCropper.Callback() {
                         @Override
                         public void onBitmapCropped(Bitmap croppedBitmap) {
                             // Since the size of the cropped bitmap may not exactly the same with
                             // image view(maybe has 1px or 2px difference),
                             // so set CENTER_CROP to let the bitmap to fit the image view.
-                            imageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                            if (!needsTransition) {
-                                imageView.setImageBitmap(croppedBitmap);
-                                return;
+                            if (!activity.isDestroyed()) {
+                                imageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                                if (!needsTransition) {
+                                    imageView.setImageBitmap(croppedBitmap);
+                                    return;
+                                }
+
+                                Resources resources = activity.getResources();
+
+                                Drawable[] layers = new Drawable[2];
+                                layers[0] = placeholderDrawable;
+                                layers[1] = new BitmapDrawable(resources, croppedBitmap);
+
+                                TransitionDrawable transitionDrawable = new
+                                        TransitionDrawable(layers);
+                                transitionDrawable.setCrossFadeEnabled(true);
+
+                                imageView.setImageDrawable(transitionDrawable);
+                                transitionDrawable.startTransition(resources.getInteger(
+                                        android.R.integer.config_shortAnimTime));
                             }
-
-                            Resources resources = activity.getResources();
-
-                            Drawable[] layers = new Drawable[2];
-                            layers[0] = placeholderDrawable;
-                            layers[1] = new BitmapDrawable(resources, croppedBitmap);
-
-                            TransitionDrawable transitionDrawable = new TransitionDrawable(layers);
-                            transitionDrawable.setCrossFadeEnabled(true);
-
-                            imageView.setImageDrawable(transitionDrawable);
-                            transitionDrawable.startTransition(resources.getInteger(
-                                    android.R.integer.config_shortAnimTime));
                         }
 
                         @Override
                         public void onError(@Nullable Throwable e) {
-
+                            if (!activity.isDestroyed()) {
+                                loadDrawable(activity, imageView, placeholderColor);
+                            }
                         }
                     });
         });
@@ -351,63 +427,41 @@ public abstract class Asset {
         void onDrawableLoaded();
     }
 
-    protected void adjustCropRect(Context context, Point assetDimensions, Rect cropRect) {
+    protected void adjustCropRect(Context context, Point assetDimensions, Rect cropRect,
+            boolean offsetToStart) {
         WallpaperCropUtils.adjustCropRect(context, cropRect, true /* zoomIn */);
     }
 
     /**
-     * Custom AsyncTask which returns a copy of the given bitmap which is center cropped and scaled
-     * to fit in the given ImageView.
+     * Returns a copy of the given bitmap which is center cropped and scaled
+     * to fit in the given ImageView and the thread runs on ExecutorService.
      */
-    public static class CenterCropBitmapTask extends AsyncTask<Void, Void, Bitmap> {
+    public void centerCropBitmap(Bitmap bitmap, View view, BitmapReceiver bitmapReceiver) {
+        Point imageViewDimensions = getViewDimensions(view);
+        sExecutorService.execute(() -> {
+            int measuredWidth = imageViewDimensions.x;
+            int measuredHeight = imageViewDimensions.y;
 
-        private Bitmap mBitmap;
-        private BitmapReceiver mBitmapReceiver;
-
-        private int mImageViewWidth;
-        private int mImageViewHeight;
-
-        public CenterCropBitmapTask(Bitmap bitmap, View view,
-                BitmapReceiver bitmapReceiver) {
-            mBitmap = bitmap;
-            mBitmapReceiver = bitmapReceiver;
-
-            Point imageViewDimensions = getViewDimensions(view);
-
-            mImageViewWidth = imageViewDimensions.x;
-            mImageViewHeight = imageViewDimensions.y;
-        }
-
-        @Override
-        protected Bitmap doInBackground(Void... unused) {
-            int measuredWidth = mImageViewWidth;
-            int measuredHeight = mImageViewHeight;
-
-            int bitmapWidth = mBitmap.getWidth();
-            int bitmapHeight = mBitmap.getHeight();
+            int bitmapWidth = bitmap.getWidth();
+            int bitmapHeight = bitmap.getHeight();
 
             float scale = Math.min(
                     (float) bitmapWidth / measuredWidth,
                     (float) bitmapHeight / measuredHeight);
 
             Bitmap scaledBitmap = Bitmap.createScaledBitmap(
-                    mBitmap, Math.round(bitmapWidth / scale), Math.round(bitmapHeight / scale),
+                    bitmap, Math.round(bitmapWidth / scale), Math.round(bitmapHeight / scale),
                     true);
 
             int horizontalGutterPx = Math.max(0, (scaledBitmap.getWidth() - measuredWidth) / 2);
             int verticalGutterPx = Math.max(0, (scaledBitmap.getHeight() - measuredHeight) / 2);
-
-            return Bitmap.createBitmap(
+            Bitmap result = Bitmap.createBitmap(
                     scaledBitmap,
                     horizontalGutterPx,
                     verticalGutterPx,
                     scaledBitmap.getWidth() - (2 * horizontalGutterPx),
                     scaledBitmap.getHeight() - (2 * verticalGutterPx));
-        }
-
-        @Override
-        protected void onPostExecute(Bitmap newBitmap) {
-            mBitmapReceiver.onBitmapDecoded(newBitmap);
-        }
+            decodeBitmapCompleted(bitmapReceiver, result);
+        });
     }
 }

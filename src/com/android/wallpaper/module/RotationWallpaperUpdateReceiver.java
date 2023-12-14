@@ -21,7 +21,6 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 
-import com.android.wallpaper.compat.BuildCompat;
 import com.android.wallpaper.util.DiskBasedLogger;
 import com.android.wallpaper.util.FileMover;
 
@@ -45,8 +44,7 @@ public class RotationWallpaperUpdateReceiver extends BroadcastReceiver {
         // MY_PACKAGE_REPLACED intent.
         if (intent.getAction() == null
                 || !(intent.getAction().equals(Intent.ACTION_MY_PACKAGE_REPLACED)
-                || intent.getAction().equals(Intent.ACTION_BOOT_COMPLETED))
-                || !BuildCompat.isAtLeastN()) {
+                || intent.getAction().equals(Intent.ACTION_BOOT_COMPLETED))) {
             DiskBasedLogger.e(
                     TAG,
                     "Unexpected action or Android version!",
@@ -101,7 +99,8 @@ public class RotationWallpaperUpdateReceiver extends BroadcastReceiver {
                     wallpaperPreferences.getHomeWallpaperActionLabelRes(),
                     wallpaperPreferences.getHomeWallpaperActionIconRes(),
                     wallpaperPreferences.getHomeWallpaperActionUrl(),
-                    wallpaperPreferences.getHomeWallpaperCollectionId());
+                    wallpaperPreferences.getHomeWallpaperCollectionId(),
+                    wallpaperPreferences.getHomeWallpaperRemoteId());
             wallpaperFile.delete();
 
         } catch (Exception ex) {

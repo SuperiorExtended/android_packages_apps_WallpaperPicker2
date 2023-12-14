@@ -21,6 +21,7 @@ import android.content.res.Resources;
 import android.util.AttributeSet;
 
 import androidx.annotation.IdRes;
+import androidx.annotation.Nullable;
 import androidx.annotation.StringRes;
 
 import com.android.wallpaper.asset.Asset;
@@ -73,14 +74,24 @@ public class WallpaperCategory extends Category {
     }
 
     @Override
-    public void show(Activity srcActivity, PickerIntentFactory factory, int requestCode) {
-        srcActivity.startActivityForResult(
-                factory.newIntent(srcActivity, getCollectionId()), requestCode);
+    public void show(Activity srcActivity, int requestCode) {
+        // No op
     }
 
     @Override
     public boolean isEnumerable() {
         return true;
+    }
+
+    @Override
+    public boolean isSingleWallpaperCategory() {
+        return mWallpapers != null && mWallpapers.size() == 1;
+    }
+
+    @Nullable
+    @Override
+    public WallpaperInfo getSingleWallpaper() {
+        return isSingleWallpaperCategory() ? mWallpapers.get(0) : null;
     }
 
     /**
@@ -168,7 +179,7 @@ public class WallpaperCategory extends Category {
         public WallpaperCategory build() {
             if (mThumbResId != 0) {
                 return new WallpaperCategory(mTitle, mId,
-                        new ResourceAsset(mPartnerRes, mThumbResId), mWallpapers, mPriority);
+                        new ResourceAsset(mPartnerRes, mThumbResId, true), mWallpapers, mPriority);
             } else {
                 int featuredIndex = 0;
                 for (int i = 0; i < mWallpapers.size(); i++) {

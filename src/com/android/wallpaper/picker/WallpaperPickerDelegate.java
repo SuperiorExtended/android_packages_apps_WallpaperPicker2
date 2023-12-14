@@ -18,61 +18,53 @@ package com.android.wallpaper.picker;
 import android.Manifest.permission;
 import android.app.Activity;
 import android.app.WallpaperManager;
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build.VERSION;
 import android.os.Build.VERSION_CODES;
 import android.service.wallpaper.WallpaperService;
+import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.fragment.app.FragmentActivity;
 
 import com.android.wallpaper.R;
-import com.android.wallpaper.compat.WallpaperManagerCompat;
 import com.android.wallpaper.model.Category;
 import com.android.wallpaper.model.CategoryProvider;
 import com.android.wallpaper.model.CategoryReceiver;
 import com.android.wallpaper.model.ImageWallpaperInfo;
-import com.android.wallpaper.model.InlinePreviewIntentFactory;
 import com.android.wallpaper.model.WallpaperInfo;
-import com.android.wallpaper.module.FormFactorChecker;
-import com.android.wallpaper.module.FormFactorChecker.FormFactor;
 import com.android.wallpaper.module.Injector;
 import com.android.wallpaper.module.InjectorProvider;
 import com.android.wallpaper.module.PackageStatusNotifier;
 import com.android.wallpaper.module.PackageStatusNotifier.PackageStatus;
 import com.android.wallpaper.module.WallpaperPersister;
 import com.android.wallpaper.module.WallpaperPreferences;
-import com.android.wallpaper.picker.PreviewActivity.PreviewActivityIntentFactory;
-import com.android.wallpaper.picker.ViewOnlyPreviewActivity.ViewOnlyPreviewActivityIntentFactory;
 import com.android.wallpaper.picker.WallpaperDisabledFragment.WallpaperSupportLevel;
-import com.android.wallpaper.picker.individual.IndividualPickerActivity.IndividualPickerActivityIntentFactory;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
  * Implements all the logic for handling a WallpaperPicker container Activity.
- * @see TopLevelPickerActivity for usage details.
+ * @see CustomizationPickerActivity for usage details.
  */
 public class WallpaperPickerDelegate implements MyPhotosStarter {
 
+    private static final String TAG = "WallpaperPickerDelegate";
     private final FragmentActivity mActivity;
     private final WallpapersUiContainer mContainer;
+    public static boolean DISABLE_MY_PHOTOS_BLOCK_PREVIEW = false;
     public static final int SHOW_CATEGORY_REQUEST_CODE = 0;
     public static final int PREVIEW_WALLPAPER_REQUEST_CODE = 1;
     public static final int VIEW_ONLY_PREVIEW_WALLPAPER_REQUEST_CODE = 2;
     public static final int READ_EXTERNAL_STORAGE_PERMISSION_REQUEST_CODE = 3;
     public static final int PREVIEW_LIVE_WALLPAPER_REQUEST_CODE = 4;
-
-    private IndividualPickerActivityIntentFactory mPickerIntentFactory;
-
-    private InlinePreviewIntentFactory mPreviewIntentFactory;
-    private InlinePreviewIntentFactory mViewOnlyPreviewIntentFactory;
-
-    @FormFactor private int mFormFactor;
+    public static final String IS_LIVE_WALLPAPER = "isLiveWallpaper";
+    private final MyPhotosIntentProvider mMyPhotosIntentProvider;
     private WallpaperPreferences mPreferences;
     private PackageStatusNotifier mPackageStatusNotifier;
 
@@ -83,27 +75,22 @@ public class WallpaperPickerDelegate implements MyPhotosStarter {
     private String mDownloadableIntentAction;
     private CategoryProvider mCategoryProvider;
     private WallpaperPersister mWallpaperPersister;
-    private static final String READ_PERMISSION = permission.READ_EXTERNAL_STORAGE;
+    private static final String READ_IMAGE_PERMISSION = permission.READ_MEDIA_IMAGES;
 
     public WallpaperPickerDelegate(WallpapersUiContainer container, FragmentActivity activity,
             Injector injector) {
         mContainer = container;
         mActivity = activity;
-        mPickerIntentFactory = new IndividualPickerActivityIntentFactory();
-        mPreviewIntentFactory = new PreviewActivityIntentFactory();
-        mViewOnlyPreviewIntentFactory =
-                new ViewOnlyPreviewActivityIntentFactory();
 
         mCategoryProvider = injector.getCategoryProvider(activity);
         mPreferences = injector.getPreferences(activity);
 
         mPackageStatusNotifier = injector.getPackageStatusNotifier(activity);
         mWallpaperPersister = injector.getWallpaperPersister(activity);
-        final FormFactorChecker formFactorChecker = injector.getFormFactorChecker(activity);
-        mFormFactor = formFactorChecker.getFormFactor();
 
         mPermissionChangedListeners = new ArrayList<>();
         mDownloadableIntentAction = injector.getDownloadableIntentAction();
+        mMyPhotosIntentProvider = injector.getMyPhotosIntentProvider();
     }
 
     public void initialize(boolean forceCategoryRefresh) {
@@ -117,7 +104,7 @@ public class WallpaperPickerDelegate implements MyPhotosStarter {
         if (mDownloadableIntentAction != null) {
             mDownloadableWallpaperStatusListener = (packageName, status) -> {
                 if (status != PackageStatusNotifier.PackageStatus.REMOVED) {
-                    populateCategories(true);
+                    populateCategories(/* forceRefresh= */ true);
                 }
             };
             mPackageStatusNotifier.addListener(
@@ -127,22 +114,25 @@ public class WallpaperPickerDelegate implements MyPhotosStarter {
 
     @Override
     public void requestCustomPhotoPicker(PermissionChangedListener listener) {
-        if (!isReadExternalStoragePermissionGranted()) {
-            PermissionChangedListener wrappedListener = new PermissionChangedListener() {
-                @Override
-                public void onPermissionsGranted() {
-                    listener.onPermissionsGranted();
-                    showCustomPhotoPicker();
-                }
+        //TODO (b/282073506): Figure out a better way to have better photos experience
+        if (DISABLE_MY_PHOTOS_BLOCK_PREVIEW) {
+            if (!isReadExternalStoragePermissionGranted()) {
+                PermissionChangedListener wrappedListener = new PermissionChangedListener() {
+                    @Override
+                    public void onPermissionsGranted() {
+                        listener.onPermissionsGranted();
+                        showCustomPhotoPicker();
+                    }
 
-                @Override
-                public void onPermissionsDenied(boolean dontAskAgain) {
-                    listener.onPermissionsDenied(dontAskAgain);
-                }
-            };
-            requestExternalStoragePermission(wrappedListener);
+                    @Override
+                    public void onPermissionsDenied(boolean dontAskAgain) {
+                        listener.onPermissionsDenied(dontAskAgain);
+                    }
+                };
+                requestExternalStoragePermission(wrappedListener);
 
-            return;
+                return;
+            }
         }
 
         showCustomPhotoPicker();
@@ -155,23 +145,35 @@ public class WallpaperPickerDelegate implements MyPhotosStarter {
     public void requestExternalStoragePermission(PermissionChangedListener listener) {
         mPermissionChangedListeners.add(listener);
         mActivity.requestPermissions(
-                new String[]{READ_PERMISSION},
+                new String[]{READ_IMAGE_PERMISSION},
                 READ_EXTERNAL_STORAGE_PERMISSION_REQUEST_CODE);
     }
 
     /**
-     * Returns whether READ_EXTERNAL_STORAGE has been granted for the application.
+     * Returns whether READ_MEDIA_IMAGES has been granted for the application.
      */
     public boolean isReadExternalStoragePermissionGranted() {
         return mActivity.getPackageManager().checkPermission(
-                permission.READ_EXTERNAL_STORAGE,
+                permission.READ_MEDIA_IMAGES,
                 mActivity.getPackageName()) == PackageManager.PERMISSION_GRANTED;
     }
 
     private void showCustomPhotoPicker() {
-        Intent intent = new Intent(Intent.ACTION_PICK);
-        intent.setType("image/*");
-        mActivity.startActivityForResult(intent, SHOW_CATEGORY_REQUEST_CODE);
+        try {
+            Intent intent = mMyPhotosIntentProvider.getMyPhotosIntent(mActivity);
+            mActivity.startActivityForResult(intent, SHOW_CATEGORY_REQUEST_CODE);
+        } catch (ActivityNotFoundException e) {
+            Intent fallback = mMyPhotosIntentProvider.getFallbackIntent(mActivity);
+            if (fallback != null) {
+                Log.i(TAG, "Couldn't launch photo picker with main intent, trying with fallback");
+                mActivity.startActivityForResult(fallback, SHOW_CATEGORY_REQUEST_CODE);
+            } else {
+                Log.e(TAG,
+                        "Couldn't launch photo picker with main intent and no fallback is "
+                                + "available");
+                throw e;
+            }
+        }
     }
 
     private void updateThirdPartyCategories(String packageName, @PackageStatus int status) {
@@ -206,7 +208,7 @@ public class WallpaperPickerDelegate implements MyPhotosStarter {
             }
         } else {
             // CHANGED package, let's reload all categories as we could have more or fewer now
-            populateCategories(true);
+            populateCategories(/* forceRefresh= */ true);
         }
     }
 
@@ -259,7 +261,26 @@ public class WallpaperPickerDelegate implements MyPhotosStarter {
     }
 
     /**
-     * Populates the categories appropriately depending on the device form factor.
+     * Fetch the wallpaper categories but don't call any callbacks on the result, just so that
+     * they're cached when loading later.
+     */
+    public void prefetchCategories() {
+        boolean forceRefresh = mCategoryProvider.resetIfNeeded();
+        mCategoryProvider.fetchCategories(new CategoryReceiver() {
+            @Override
+            public void onCategoryReceived(Category category) {
+                // Do nothing
+            }
+
+            @Override
+            public void doneFetchingCategories() {
+                // Do nothing
+            }
+        }, forceRefresh);
+    }
+
+    /**
+     * Populates the categories appropriately.
      *
      * @param forceRefresh        Whether to force a refresh of categories from the
      *                            CategoryProvider. True if
@@ -267,10 +288,10 @@ public class WallpaperPickerDelegate implements MyPhotosStarter {
      */
     public void populateCategories(boolean forceRefresh) {
 
-        final CategoryFragment categoryFragment = getCategoryPickerFragment();
+        final CategorySelectorFragment categorySelectorFragment = getCategorySelectorFragment();
 
-        if (forceRefresh && categoryFragment != null) {
-            categoryFragment.clearCategories();
+        if (forceRefresh && categorySelectorFragment != null) {
+            categorySelectorFragment.clearCategories();
         }
 
         mCategoryProvider.fetchCategories(new CategoryReceiver() {
@@ -287,51 +308,45 @@ public class WallpaperPickerDelegate implements MyPhotosStarter {
     }
 
     private void notifyDoneFetchingCategories() {
-        if (mFormFactor == FormFactorChecker.FORM_FACTOR_MOBILE) {
-            CategoryFragment categoryFragment = getCategoryPickerFragment();
-            if (categoryFragment != null) {
-                categoryFragment.doneFetchingCategories();
-            }
-        } else {
-            mContainer.doneFetchingCategories();
+        CategorySelectorFragment categorySelectorFragment = getCategorySelectorFragment();
+        if (categorySelectorFragment != null) {
+            categorySelectorFragment.doneFetchingCategories();
         }
     }
 
     public void addCategory(Category category, boolean fetchingAll) {
-        CategoryFragment categoryFragment = getCategoryPickerFragment();
-        if (categoryFragment != null) {
-            categoryFragment.addCategory(category, fetchingAll);
+        CategorySelectorFragment categorySelectorFragment = getCategorySelectorFragment();
+        if (categorySelectorFragment != null) {
+            categorySelectorFragment.addCategory(category, fetchingAll);
         }
     }
 
     public void removeCategory(Category category) {
-        CategoryFragment categoryFragment = getCategoryPickerFragment();
-        if (categoryFragment != null) {
-            categoryFragment.removeCategory(category);
+        CategorySelectorFragment categorySelectorFragment = getCategorySelectorFragment();
+        if (categorySelectorFragment != null) {
+            categorySelectorFragment.removeCategory(category);
         }
     }
 
     public void updateCategory(Category category) {
-        CategoryFragment categoryFragment = getCategoryPickerFragment();
-        if (categoryFragment != null) {
-            categoryFragment.updateCategory(category);
+        CategorySelectorFragment categorySelectorFragment = getCategorySelectorFragment();
+        if (categorySelectorFragment != null) {
+            categorySelectorFragment.updateCategory(category);
         }
     }
 
     @Nullable
-    private CategoryFragment getCategoryPickerFragment() {
-        return mContainer.getCategoryFragment();
+    private CategorySelectorFragment getCategorySelectorFragment() {
+        return mContainer.getCategorySelectorFragment();
     }
 
     /**
      * Shows the view-only preview activity for the given wallpaper.
      */
-    public void showViewOnlyPreview(WallpaperInfo wallpaperInfo, boolean isViewAsHome) {
-        ((ViewOnlyPreviewActivityIntentFactory) mViewOnlyPreviewIntentFactory).setAsHomePreview(
-                /* isHomeAndLockPreviews= */ true, isViewAsHome);
+    public void showViewOnlyPreview(WallpaperInfo wallpaperInfo, boolean isAssetIdPresent) {
         wallpaperInfo.showPreview(
-                mActivity, mViewOnlyPreviewIntentFactory,
-                VIEW_ONLY_PREVIEW_WALLPAPER_REQUEST_CODE);
+                mActivity, InjectorProvider.getInjector().getViewOnlyPreviewActivityIntentFactory(),
+                VIEW_ONLY_PREVIEW_WALLPAPER_REQUEST_CODE, isAssetIdPresent);
     }
 
     /**
@@ -342,7 +357,7 @@ public class WallpaperPickerDelegate implements MyPhotosStarter {
         if (category == null) {
             return;
         }
-        category.show(mActivity, mPickerIntentFactory, SHOW_CATEGORY_REQUEST_CODE);
+        category.show(mActivity, SHOW_CATEGORY_REQUEST_CODE);
     }
 
     @Nullable
@@ -366,27 +381,12 @@ public class WallpaperPickerDelegate implements MyPhotosStarter {
                     ? WallpaperDisabledFragment.SUPPORTED_CAN_SET
                     : WallpaperDisabledFragment.NOT_SUPPORTED_BY_DEVICE;
         } else {
-            WallpaperManagerCompat wallpaperManagerCompat =
-                    InjectorProvider.getInjector().getWallpaperManagerCompat(
-                            mActivity);
-            boolean isSupported = wallpaperManagerCompat.getDrawable() != null;
+            boolean isSupported = WallpaperManager.getInstance(mActivity.getApplicationContext())
+                    .getDrawable() != null;
             wallpaperManager.forgetLoadedWallpaper();
             return isSupported ? WallpaperDisabledFragment.SUPPORTED_CAN_SET
                     : WallpaperDisabledFragment.NOT_SUPPORTED_BY_DEVICE;
         }
-    }
-
-    public IndividualPickerActivityIntentFactory getPickerIntentFactory() {
-        return mPickerIntentFactory;
-    }
-
-    public InlinePreviewIntentFactory getPreviewIntentFactory() {
-        return mPreviewIntentFactory;
-    }
-
-    @FormFactor
-    public int getFormFactor() {
-        return mFormFactor;
     }
 
     public WallpaperPreferences getPreferences() {
@@ -414,20 +414,20 @@ public class WallpaperPickerDelegate implements MyPhotosStarter {
 
     /**
      * Call from the Activity's onRequestPermissionsResult callback to handle permission request
-     * relevant to wallpapers (ie, READ_EXTERNAL_STORAGE)
+     * relevant to wallpapers (ie, READ_MEDIA_IMAGES)
      * @see androidx.fragment.app.FragmentActivity#onRequestPermissionsResult(int, String[], int[])
      */
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
             @NonNull int[] grantResults) {
         if (requestCode == WallpaperPickerDelegate.READ_EXTERNAL_STORAGE_PERMISSION_REQUEST_CODE
                 && permissions.length > 0
-                && permissions[0].equals(READ_PERMISSION)
+                && permissions[0].equals(READ_IMAGE_PERMISSION)
                 && grantResults.length > 0) {
             if (grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 for (PermissionChangedListener listener : getPermissionChangedListeners()) {
                     listener.onPermissionsGranted();
                 }
-            } else if (!mActivity.shouldShowRequestPermissionRationale(READ_PERMISSION)) {
+            } else if (!mActivity.shouldShowRequestPermissionRationale(READ_IMAGE_PERMISSION)) {
                 for (PermissionChangedListener listener : getPermissionChangedListeners()) {
                     listener.onPermissionsDenied(true /* dontAskAgain */);
                 }
@@ -465,16 +465,20 @@ public class WallpaperPickerDelegate implements MyPhotosStarter {
                 ImageWallpaperInfo imageWallpaper = new ImageWallpaperInfo(imageUri);
 
                 mWallpaperPersister.setWallpaperInfoInPreview(imageWallpaper);
-                imageWallpaper.showPreview(mActivity, getPreviewIntentFactory(),
-                        PREVIEW_WALLPAPER_REQUEST_CODE);
+                imageWallpaper.showPreview(mActivity,
+                        InjectorProvider.getInjector().getPreviewActivityIntentFactory(),
+                        PREVIEW_WALLPAPER_REQUEST_CODE, true);
                 return false;
-            case VIEW_ONLY_PREVIEW_WALLPAPER_REQUEST_CODE:
-                // Fall through.
-            case PREVIEW_WALLPAPER_REQUEST_CODE:
-                // Fall through.
             case PREVIEW_LIVE_WALLPAPER_REQUEST_CODE:
+                populateCategories(/* forceRefresh= */ true);
+                return true;
+            case VIEW_ONLY_PREVIEW_WALLPAPER_REQUEST_CODE:
+                return true;
+            case PREVIEW_WALLPAPER_REQUEST_CODE:
                 // User previewed and selected a wallpaper, so finish this activity.
-                mWallpaperPersister.onLiveWallpaperSet();
+                if (data != null && data.getBooleanExtra(IS_LIVE_WALLPAPER, false)) {
+                    populateCategories(/* forceRefresh= */ true);
+                }
                 return true;
             default:
                 return false;

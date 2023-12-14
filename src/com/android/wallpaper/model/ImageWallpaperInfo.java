@@ -73,6 +73,7 @@ public class ImageWallpaperInfo extends WallpaperInfo {
     }
 
     protected ImageWallpaperInfo(Parcel in) {
+        super(in);
         mUri = Uri.parse(in.readString());
     }
 
@@ -168,12 +169,14 @@ public class ImageWallpaperInfo extends WallpaperInfo {
 
     @Override
     public void showPreview(Activity srcActivity, InlinePreviewIntentFactory factory,
-                            int requestCode) {
-        srcActivity.startActivityForResult(factory.newIntent(srcActivity, this), requestCode);
+                            int requestCode, boolean isAssetIdPresent) {
+        srcActivity.startActivityForResult(factory.newIntent(srcActivity, this,
+                isAssetIdPresent), requestCode);
     }
 
     @Override
     public void writeToParcel(Parcel parcel, int i) {
+        super.writeToParcel(parcel, i);
         parcel.writeString(mUri.toString());
     }
 }

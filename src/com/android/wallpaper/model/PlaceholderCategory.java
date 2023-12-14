@@ -36,7 +36,7 @@ public class PlaceholderCategory extends Category {
     }
 
     @Override
-    public void show(Activity srcActivity, PickerIntentFactory factory, int requestCode) {
+    public void show(Activity srcActivity, int requestCode) {
 
     }
 
@@ -44,4 +44,5 @@ public class PlaceholderCategory extends Category {
     public Asset getThumbnail(Context context) {
         return null;
     }
+
 }

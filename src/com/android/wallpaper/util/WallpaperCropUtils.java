@@ -23,9 +23,6 @@ import android.graphics.Rect;
 import android.os.Build.VERSION;
 import android.os.Build.VERSION_CODES;
 import android.view.Display;
-import android.view.View;
-
-import com.android.systemui.shared.system.WallpaperManagerCompat;
 
 /**
  * Static utility methods for wallpaper cropping operations.
@@ -84,22 +81,23 @@ public final class WallpaperCropUtils {
             minDim = Math.min(realSize.x, realSize.y);
         }
 
-        return calculateCropSurfaceSize(resources, maxDim, minDim);
+        return calculateCropSurfaceSize(resources, maxDim, minDim, display.getWidth(),
+                display.getHeight());
     }
 
     /**
      * Calculates ideal crop surface size for a surface of dimensions maxDim x minDim such that
      * there is room for parallax in both* landscape and portrait screen orientations.
      */
-    public static Point calculateCropSurfaceSize(Resources resources, int maxDim, int minDim) {
+    public static Point calculateCropSurfaceSize(Resources resources, int maxDim, int minDim,
+            int width, int height) {
         final int defaultWidth, defaultHeight;
         if (resources.getConfiguration().smallestScreenWidthDp >= 720) {
             defaultWidth = (int) (maxDim * wallpaperTravelToScreenWidthRatio(maxDim, minDim));
-            defaultHeight = maxDim;
         } else {
             defaultWidth = Math.max((int) (minDim * WALLPAPER_SCREENS_SPAN), maxDim);
-            defaultHeight = maxDim;
         }
+        defaultHeight = width < height ? maxDim : minDim;
 
         return new Point(defaultWidth, defaultHeight);
     }
@@ -191,10 +189,11 @@ public final class WallpaperCropUtils {
      * @return a Rect representing the area of the wallpaper to crop.
      */
     public static Rect calculateCropRect(Context context, float wallpaperZoom, Point wallpaperSize,
-            Point defaultCropSurfaceSize, Point targetHostSize, int scrollX, int scrollY) {
+            Point defaultCropSurfaceSize, Point targetHostSize, int scrollX, int scrollY,
+            boolean cropExtraWidth) {
         // Calculate Rect of wallpaper in physical pixel terms (i.e., scaled to current zoom).
-        int scaledWallpaperWidth = (int) (wallpaperSize.x * wallpaperZoom);
-        int scaledWallpaperHeight = (int) (wallpaperSize.y * wallpaperZoom);
+        int scaledWallpaperWidth = Math.round(wallpaperSize.x * wallpaperZoom);
+        int scaledWallpaperHeight = Math.round(wallpaperSize.y * wallpaperZoom);
         Rect rect = new Rect();
         rect.set(0, 0, scaledWallpaperWidth, scaledWallpaperHeight);
 
@@ -206,12 +205,14 @@ public final class WallpaperCropUtils {
         int extraWidth = defaultCropSurfaceSize.x - targetHostSize.x;
         int extraHeightTopAndBottom = (int) ((defaultCropSurfaceSize.y - targetHostSize.y) / 2f);
 
-        // Try to increase size of screenRect to include extra width depending on the layout
-        // direction.
-        if (isRtl(context)) {
-            cropRect.left = Math.max(cropRect.left - extraWidth, rect.left);
-        } else {
-            cropRect.right = Math.min(cropRect.right + extraWidth, rect.right);
+        if (cropExtraWidth) {
+            // Try to increase size of screenRect to include extra width depending on the layout
+            // direction.
+            if (RtlUtils.isRtl(context)) {
+                cropRect.left = Math.max(cropRect.left - extraWidth, rect.left);
+            } else {
+                cropRect.right = Math.min(cropRect.right + extraWidth, rect.right);
+            }
         }
 
         // Try to increase the size of the cropRect to to include extra height.
@@ -302,14 +303,32 @@ public final class WallpaperCropUtils {
      * @param rawWallpaperSize        the size of the raw wallpaper as a Point (x,y).
      * @param visibleRawWallpaperRect the area of the raw wallpaper which is expected to see.
      * @param wallpaperZoom           the factor which is used to scale the raw wallpaper.
+     * @param cropExtraWidth          true to crop extra wallpaper width for panel sliding.
      */
     public static Rect calculateCropRect(Context context, Point hostViewSize, Point cropSize,
-            Point rawWallpaperSize, Rect visibleRawWallpaperRect, float wallpaperZoom) {
+            Point rawWallpaperSize, Rect visibleRawWallpaperRect, float wallpaperZoom,
+            boolean cropExtraWidth) {
         int scrollX = (int) (visibleRawWallpaperRect.left * wallpaperZoom);
         int scrollY = (int) (visibleRawWallpaperRect.top * wallpaperZoom);
 
         return calculateCropRect(context, wallpaperZoom, rawWallpaperSize, cropSize, hostViewSize,
-                scrollX, scrollY);
+                scrollX, scrollY, cropExtraWidth);
+    }
+
+    /**
+     * Calculates {@link Rect} of the wallpaper which we want to crop to in physical pixel terms
+     * (i.e., scaled to current zoom).
+     *
+     * @param hostViewSize            the size of the view hosting the wallpaper as a Point (x,y).
+     * @param cropSize                the default size of the crop as a Point (x,y).
+     * @param rawWallpaperSize        the size of the raw wallpaper as a Point (x,y).
+     * @param visibleRawWallpaperRect the area of the raw wallpaper which is expected to see.
+     * @param wallpaperZoom           the factor which is used to scale the raw wallpaper.
+     */
+    public static Rect calculateCropRect(Context context, Point hostViewSize, Point cropSize,
+            Point rawWallpaperSize, Rect visibleRawWallpaperRect, float wallpaperZoom) {
+        return calculateCropRect(context, hostViewSize, cropSize, rawWallpaperSize,
+                visibleRawWallpaperRect, wallpaperZoom, /* cropExtraWidth= */ true);
     }
 
     /**
@@ -340,15 +359,46 @@ public final class WallpaperCropUtils {
      * Get the system wallpaper's maximum scale value.
      */
     public static float getSystemWallpaperMaximumScale(Context context) {
-        return WallpaperManagerCompat.getWallpaperZoomOutMaxScale(context);
+        return context.getResources()
+                .getFloat(Resources.getSystem().getIdentifier(
+                        /* name= */ "config_wallpaperMaxScale",
+                        /* defType= */ "dimen",
+                        /* defPackage= */ "android"));
     }
 
     /**
-     * Returns whether layout direction is RTL (or false for LTR). Since native RTL layout support
-     * was added in API 17, returns false for versions lower than 17.
+     * Gets the scale of screen size and crop rect real size
+     *
+     * @param wallpaperScale The scale of crop rect and real size rect
+     * @param cropRect The area wallpaper cropped
+     * @param screenWidth  The width of screen size
+     * @param screenHeight The height of screen size
      */
-    public static boolean isRtl(Context context) {
-        return context.getResources().getConfiguration().getLayoutDirection()
-                == View.LAYOUT_DIRECTION_RTL;
+    public static float getScaleOfScreenResolution(float wallpaperScale, Rect cropRect,
+            int screenWidth, int screenHeight) {
+        int rectRealWidth = Math.round((float) cropRect.width() / wallpaperScale);
+        int rectRealHeight = Math.round((float) cropRect.height() / wallpaperScale);
+        int cropWidth = cropRect.width();
+        int cropHeight = cropRect.height();
+        // Not scale with screen resolution because cropRect is bigger than screen size.
+        if (cropWidth >= screenWidth || cropHeight >= screenHeight) {
+            return 1;
+        }
+
+        int newWidth = screenWidth;
+        int newHeight = screenHeight;
+        // Screen size is bigger than crop real size so we only need enlarge to real size
+        if (newWidth > rectRealWidth || newHeight > rectRealHeight) {
+            newWidth = rectRealWidth;
+            newHeight = rectRealWidth;
+        }
+        float screenScale = Math.min((float) newWidth / cropWidth, (float) newHeight / cropHeight);
+
+        // screenScale < 1 means our real crop size is smaller than crop size it should be.
+        // So we do nothing in this case, otherwise it'll cause wallpaper smaller than we expected.
+        if (screenScale < 1) {
+            return 1;
+        }
+        return screenScale;
     }
 }

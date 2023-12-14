@@ -17,14 +17,11 @@ package com.android.wallpaper.model;
 
 import android.app.Activity;
 import android.content.Context;
-import android.content.res.Resources;
-import android.os.Build;
 import android.os.Parcel;
 
 import com.android.wallpaper.R;
 import com.android.wallpaper.asset.Asset;
 import com.android.wallpaper.asset.BuiltInWallpaperAsset;
-import com.android.wallpaper.asset.ResourceAsset;
 
 import java.util.Arrays;
 import java.util.List;
@@ -37,7 +34,7 @@ public class DefaultWallpaperInfo extends WallpaperInfo {
             new Creator<DefaultWallpaperInfo>() {
                 @Override
                 public DefaultWallpaperInfo createFromParcel(Parcel in) {
-                    return new DefaultWallpaperInfo();
+                    return new DefaultWallpaperInfo(in);
                 }
 
                 @Override
@@ -47,6 +44,12 @@ public class DefaultWallpaperInfo extends WallpaperInfo {
             };
     private Asset mAsset;
 
+    public DefaultWallpaperInfo() {}
+
+    protected DefaultWallpaperInfo(Parcel in) {
+        super(in);
+    }
+
     @Override
     public List<String> getAttributions(Context context) {
         return Arrays.asList(context.getResources().getString(R.string.fallback_wallpaper_title));
@@ -55,17 +58,7 @@ public class DefaultWallpaperInfo extends WallpaperInfo {
     @Override
     public Asset getAsset(Context context) {
         if (mAsset == null) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-                mAsset = new BuiltInWallpaperAsset(context);
-            } else {
-                Resources sysRes = Resources.getSystem();
-                mAsset = new ResourceAsset(
-                        sysRes,
-                        sysRes.getIdentifier(
-                                "default_wallpaper" /* name */,
-                                "drawable" /* defType */,
-                                "android" /* defPackage */));
-            }
+            mAsset = new BuiltInWallpaperAsset(context);
         }
         return mAsset;
     }
@@ -88,8 +81,9 @@ public class DefaultWallpaperInfo extends WallpaperInfo {
 
     @Override
     public void showPreview(Activity srcActivity, InlinePreviewIntentFactory factory,
-                            int requestCode) {
-        srcActivity.startActivityForResult(factory.newIntent(srcActivity, this), requestCode);
+                            int requestCode, boolean isAssetIdPresent) {
+        srcActivity.startActivityForResult(factory.newIntent(srcActivity, this,
+                isAssetIdPresent), requestCode);
     }
 
     @Override
@@ -100,5 +94,6 @@ public class DefaultWallpaperInfo extends WallpaperInfo {
 
     @Override
     public void writeToParcel(Parcel parcel, int i) {
+        super.writeToParcel(parcel, i);
     }
 }

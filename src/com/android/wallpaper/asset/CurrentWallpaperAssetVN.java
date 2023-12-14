@@ -15,26 +15,35 @@
  */
 package com.android.wallpaper.asset;
 
+import static android.app.WallpaperManager.SetWallpaperFlags;
+
+import android.app.Activity;
 import android.app.WallpaperManager;
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Point;
 import android.graphics.Rect;
+import android.graphics.drawable.ColorDrawable;
 import android.os.ParcelFileDescriptor;
 import android.os.ParcelFileDescriptor.AutoCloseInputStream;
 import android.util.Log;
 import android.widget.ImageView;
 
-import com.android.wallpaper.compat.WallpaperManagerCompat;
-import com.android.wallpaper.compat.WallpaperManagerCompat.WallpaperLocation;
+import androidx.annotation.WorkerThread;
+
 import com.android.wallpaper.util.WallpaperCropUtils;
 
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.load.Key;
+import com.bumptech.glide.load.MultiTransformation;
+import com.bumptech.glide.load.resource.bitmap.BitmapTransformation;
+import com.bumptech.glide.load.resource.bitmap.FitCenter;
 import com.bumptech.glide.load.resource.drawable.DrawableTransitionOptions;
 import com.bumptech.glide.request.RequestOptions;
 
 import java.io.InputStream;
 import java.security.MessageDigest;
+import java.util.concurrent.ExecutionException;
 
 /**
  * Asset representing the currently-set image wallpaper on N+ devices, including when daily rotation
@@ -44,21 +53,19 @@ public class CurrentWallpaperAssetVN extends StreamableAsset {
 
     private static final String TAG = "CurrentWallpaperAssetVN";
     int mWallpaperId;
-    private WallpaperManager mWallpaperManager;
-    private WallpaperManagerCompat mWallpaperManagerCompat;
-    @WallpaperLocation
-    private int mWallpaperManagerFlag;
+    private final WallpaperManager mWallpaperManager;
+    @SetWallpaperFlags
+    private final int mWallpaperManagerFlag;
 
-    public CurrentWallpaperAssetVN(Context context, @WallpaperLocation int wallpaperManagerFlag) {
+    public CurrentWallpaperAssetVN(Context context, @SetWallpaperFlags int wallpaperManagerFlag) {
         mWallpaperManager = WallpaperManager.getInstance(context);
-        mWallpaperManagerCompat = WallpaperManagerCompat.getInstance(context);
         mWallpaperManagerFlag = wallpaperManagerFlag;
-        mWallpaperId = mWallpaperManagerCompat.getWallpaperId(mWallpaperManagerFlag);
+        mWallpaperId = mWallpaperManager.getWallpaperId(mWallpaperManagerFlag);
     }
 
     @Override
     protected InputStream openInputStream() {
-        ParcelFileDescriptor pfd = mWallpaperManagerCompat.getWallpaperFile(mWallpaperManagerFlag);
+        ParcelFileDescriptor pfd = getWallpaperPfd();
 
         if (pfd == null) {
             Log.e(TAG, "ParcelFileDescriptor for wallpaper " + mWallpaperManagerFlag + " is null, unable "
@@ -88,6 +95,35 @@ public class CurrentWallpaperAssetVN extends StreamableAsset {
         return false;
     }
 
+
+    @Override
+    public void loadLowResDrawable(Activity activity, ImageView imageView, int placeholderColor,
+            BitmapTransformation transformation) {
+        MultiTransformation<Bitmap> multiTransformation =
+                new MultiTransformation<>(new FitCenter(), transformation);
+        Glide.with(activity)
+                .asDrawable()
+                .load(this)
+                .apply(RequestOptions.bitmapTransform(multiTransformation)
+                        .placeholder(new ColorDrawable(placeholderColor)))
+                .into(imageView);
+    }
+
+    @Override
+    @WorkerThread
+    public Bitmap getLowResBitmap(Context context) {
+        try {
+            return Glide.with(context)
+                    .asBitmap()
+                    .load(this)
+                    .submit()
+                    .get();
+        } catch (InterruptedException | ExecutionException e) {
+            Log.w(TAG, "Couldn't obtain low res bitmap", e);
+        }
+        return null;
+    }
+
     @Override
     public void loadDrawable(Context context, ImageView imageView,
                              int unusedPlaceholderColor) {
@@ -100,8 +136,11 @@ public class CurrentWallpaperAssetVN extends StreamableAsset {
     }
 
     @Override
-    protected void adjustCropRect(Context context, Point assetDimensions, Rect cropRect) {
-        cropRect.offsetTo(0, 0);
+    protected void adjustCropRect(Context context, Point assetDimensions, Rect cropRect,
+            boolean offsetToStart) {
+        if (offsetToStart) {
+            cropRect.offsetTo(0, 0);
+        }
         WallpaperCropUtils.adjustCurrentWallpaperCropRect(context, assetDimensions, cropRect);
     }
 
@@ -110,7 +149,7 @@ public class CurrentWallpaperAssetVN extends StreamableAsset {
     }
 
     ParcelFileDescriptor getWallpaperPfd() {
-        return mWallpaperManagerCompat.getWallpaperFile(mWallpaperManagerFlag);
+        return mWallpaperManager.getWallpaperFile(mWallpaperManagerFlag);
     }
 
     /**
@@ -118,11 +157,12 @@ public class CurrentWallpaperAssetVN extends StreamableAsset {
      * provided by WallpaperManager.
      */
     private static final class CurrentWallpaperVNKey implements Key {
-        private WallpaperManager mWallpaperManager;
-        private int mWallpaperFlag;
+        private final WallpaperManager mWallpaperManager;
+        @SetWallpaperFlags
+        private final int mWallpaperFlag;
 
-        public CurrentWallpaperVNKey(WallpaperManager wallpaperManager,
-                                     @WallpaperLocation int wallpaperFlag) {
+        CurrentWallpaperVNKey(WallpaperManager wallpaperManager,
+                @SetWallpaperFlags int wallpaperFlag) {
             mWallpaperManager = wallpaperManager;
             mWallpaperFlag = wallpaperFlag;
         }

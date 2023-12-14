@@ -35,7 +35,6 @@ import androidx.annotation.Nullable;
 import com.android.wallpaper.R;
 import com.android.wallpaper.asset.Asset;
 import com.android.wallpaper.asset.LiveWallpaperThumbAsset;
-import com.android.wallpaper.compat.BuildCompat;
 import com.android.wallpaper.module.InjectorProvider;
 import com.android.wallpaper.module.LiveWallpaperInfoFactory;
 import com.android.wallpaper.util.ActivityUtils;
@@ -77,7 +76,7 @@ public class LiveWallpaperInfo extends WallpaperInfo {
     public static final String ATTR_SERVICE = "service";
 
     /**
-     * Create a new {@link LiveWallpaperInfo} from an XML {@link AttributeSet}
+     * Creates a new {@link LiveWallpaperInfo} from an XML {@link AttributeSet}
      * @param context used to construct the {@link android.app.WallpaperInfo} associated with the
      *                new {@link LiveWallpaperInfo}
      * @param categoryId Id of the category the new wallpaper will belong to
@@ -94,6 +93,17 @@ public class LiveWallpaperInfo extends WallpaperInfo {
         }
         String packageName = attrs.getAttributeValue(null, ATTR_PACKAGE);
         String serviceName = attrs.getAttributeValue(null, ATTR_SERVICE);
+        return fromPackageAndServiceName(context, categoryId, wallpaperId, packageName,
+                serviceName);
+    }
+
+    /**
+     * Creates a new {@link LiveWallpaperInfo} from its individual components
+     * @return a newly created {@link LiveWallpaperInfo} or {@code null} if one couldn't be created.
+     */
+    @Nullable
+    public static LiveWallpaperInfo fromPackageAndServiceName(Context context, String categoryId,
+            String wallpaperId, String packageName, String serviceName) {
         if (TextUtils.isEmpty(serviceName)) {
             Log.w(TAG, "Live wallpaper declaration without service: " + wallpaperId);
             return null;
@@ -130,7 +140,7 @@ public class LiveWallpaperInfo extends WallpaperInfo {
 
     protected android.app.WallpaperInfo mInfo;
     protected LiveWallpaperThumbAsset mThumbAsset;
-    private boolean mVisibleTitle;
+    protected boolean mVisibleTitle;
     @Nullable private final String mCollectionId;
 
     /**
@@ -154,7 +164,8 @@ public class LiveWallpaperInfo extends WallpaperInfo {
         mCollectionId = collectionId;
     }
 
-    LiveWallpaperInfo(Parcel in) {
+    protected LiveWallpaperInfo(Parcel in) {
+        super(in);
         mInfo = in.readParcelable(android.app.WallpaperInfo.class.getClassLoader());
         mVisibleTitle = in.readInt() == 1;
         mCollectionId = in.readString();
@@ -197,7 +208,7 @@ public class LiveWallpaperInfo extends WallpaperInfo {
      */
     public static List<WallpaperInfo> getFromSpecifiedPackage(
             Context context, String packageName, @Nullable List<String> serviceNames,
-            boolean shouldShowTitle) {
+            boolean shouldShowTitle, String collectionId) {
         List<ResolveInfo> resolveInfos;
         if (serviceNames != null) {
             resolveInfos = getAllContainingServiceNames(context, serviceNames);
@@ -230,7 +241,8 @@ public class LiveWallpaperInfo extends WallpaperInfo {
                 continue;
             }
 
-            wallpaperInfos.add(factory.getLiveWallpaperInfo(wallpaperInfo, shouldShowTitle, null));
+            wallpaperInfos.add(
+                    factory.getLiveWallpaperInfo(wallpaperInfo, shouldShowTitle, collectionId));
         }
 
         return wallpaperInfos;
@@ -308,9 +320,16 @@ public class LiveWallpaperInfo extends WallpaperInfo {
         return wallpaperInfos;
     }
 
-    private static boolean isSystemApp(ApplicationInfo appInfo) {
+    /**
+     * @return whether the given app is a system app
+     */
+    public static boolean isSystemApp(ApplicationInfo appInfo) {
         return (appInfo.flags & (ApplicationInfo.FLAG_SYSTEM
                 | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0;
+    }
+
+    public void setVisibleTitle(boolean visibleTitle) {
+        mVisibleTitle = visibleTitle;
     }
 
     @Override
@@ -354,18 +373,12 @@ public class LiveWallpaperInfo extends WallpaperInfo {
 
     @Override
     public String getActionUrl(Context context) {
-        if (BuildCompat.isAtLeastNMR1()) {
-            try {
-                Uri wallpaperContextUri = mInfo.loadContextUri(context.getPackageManager());
-                if (wallpaperContextUri != null) {
-                    return wallpaperContextUri.toString();
-                }
-            } catch (Resources.NotFoundException e) {
-                return null;
-            }
+        try {
+            Uri wallpaperContextUri = mInfo.loadContextUri(context.getPackageManager());
+            return wallpaperContextUri != null ? wallpaperContextUri.toString() : null;
+        } catch (Resources.NotFoundException e) {
+            return null;
         }
-
-        return null;
     }
 
     /**
@@ -395,10 +408,11 @@ public class LiveWallpaperInfo extends WallpaperInfo {
 
     @Override
     public void showPreview(Activity srcActivity, InlinePreviewIntentFactory factory,
-                            int requestCode) {
+                            int requestCode, boolean isAssetIdPresent) {
         //Only use internal live picker if available, otherwise, default to the Framework one
         if (factory.shouldUseInternalLivePicker(srcActivity)) {
-            srcActivity.startActivityForResult(factory.newIntent(srcActivity, this), requestCode);
+            srcActivity.startActivityForResult(factory.newIntent(srcActivity, this,
+                    isAssetIdPresent), requestCode);
         } else {
             Intent preview = new Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER);
             preview.putExtra(WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT, mInfo.getComponent());
@@ -408,6 +422,7 @@ public class LiveWallpaperInfo extends WallpaperInfo {
 
     @Override
     public void writeToParcel(Parcel parcel, int i) {
+        super.writeToParcel(parcel, i);
         parcel.writeParcelable(mInfo, 0 /* flags */);
         parcel.writeInt(mVisibleTitle ? 1 : 0);
         parcel.writeString(mCollectionId);
@@ -428,5 +443,28 @@ public class LiveWallpaperInfo extends WallpaperInfo {
     @Override
     public String getWallpaperId() {
         return mInfo.getServiceName();
+    }
+
+    /**
+     * Returns true if this wallpaper is currently applied.
+     */
+    public boolean isApplied(android.app.WallpaperInfo currentWallpaper) {
+        return getWallpaperComponent() != null
+                && currentWallpaper != null
+                && TextUtils.equals(getWallpaperComponent().getServiceName(),
+                currentWallpaper.getServiceName());
+    }
+
+    /**
+     * Saves a wallpaper of type LiveWallpaperInfo at a particular destination.
+     * The default implementation simply returns the current wallpaper, but this can be overridden
+     * as per requirement.
+     *
+     * @param context context of the calling activity
+     * @param destination destination of the wallpaper being saved
+     * @return saved LiveWallpaperInfo object
+     */
+    public LiveWallpaperInfo saveWallpaper(Context context, int destination) {
+        return this;
     }
 }

@@ -15,11 +15,16 @@
  */
 package com.android.wallpaper.module;
 
+import static android.stats.style.StyleEnums.EFFECT_APPLIED_ABORTED;
+import static android.stats.style.StyleEnums.EFFECT_APPLIED_OFF;
+import static android.stats.style.StyleEnums.EFFECT_APPLIED_ON_FAILED;
+import static android.stats.style.StyleEnums.EFFECT_APPLIED_ON_SUCCESS;
+import static android.stats.style.StyleEnums.EFFECT_APPLIED_STARTED;
+import static android.stats.style.StyleEnums.EFFECT_PREFERENCE_UNSPECIFIED;
+
 import android.content.Intent;
 
 import androidx.annotation.IntDef;
-
-import com.android.wallpaper.module.WallpaperPersister.WallpaperPosition;
 
 /**
  * Interface for logging user events in the wallpaper picker.
@@ -63,27 +68,18 @@ public interface UserEventLogger {
     void logCategorySelected(String collectionId);
 
     /**
-     * Logs the behavior of tapping live wallpaper info page.
-     *
-     * @param collectionId wallpaper category.
-     * @param wallpaperId wallpaper id.
-     */
-    void logLiveWallpaperInfoSelected(String collectionId, String wallpaperId);
-
-    /**
-     * Logs the behavior of tapping live wallpaper customize page.
-     *
-     * @param collectionId wallpaper category.
-     * @param wallpaperId wallpaper id.
-     */
-    void logLiveWallpaperCustomizeSelected(String collectionId, String wallpaperId);
-
-    /**
      * Log current existing snapshot data.
      */
     void logSnapshot();
 
-    void logWallpaperSet(String collectionId, String wallpaperId);
+    /**
+     * Logs the behavior when applying wallpaper.
+     *
+     * @param collectionId wallpaper category.
+     * @param wallpaperId wallpaper id.
+     * @param effects effects set with wallpaper.
+     */
+    void logWallpaperSet(String collectionId, String wallpaperId, String effects);
 
     void logWallpaperSetResult(@WallpaperSetResult int result);
 
@@ -169,7 +165,7 @@ public interface UserEventLogger {
     void logStandalonePreviewImageUriHasReadPermission(boolean isReadPermissionGranted);
 
     /**
-     * Logs whether the user approved the runtime dialog to grant this app READ_EXTERNAL_STORAGE
+     * Logs whether the user approved the runtime dialog to grant this app READ_MEDIA_IMAGES
      * permission in order to open an image URI.
      */
     void logStandalonePreviewStorageDialogApproved(boolean isApproved);
@@ -183,6 +179,23 @@ public interface UserEventLogger {
      * Logs that the app was restored from a backup set.
      */
     void logRestored();
+
+    /**
+     * Logs the action related to effect.
+     */
+    void logEffectApply(String effect, @EffectStatus int status, long timeElapsedMillis,
+            int resultCode);
+
+    /**
+     * Logs the effect probe result.
+     */
+    void logEffectProbe(String effect, @EffectStatus int status);
+
+    /**
+     * Logs the effect foreground download event.
+     */
+    void logEffectForegroundDownload(String effect, @EffectStatus int status,
+            long timeElapsedMillis);
 
     /**
      * Possible results of a "set wallpaper" operation.
@@ -234,5 +247,20 @@ public interface UserEventLogger {
             DAILY_WALLPAPER_METADATA_FAILURE_SERVER_ERROR,
             DAILY_WALLPAPER_METADATA_FAILURE_TIMEOUT})
     @interface DailyWallpaperMetadataFailureReason {
+    }
+
+    /**
+     * Possible actions for cinematic effect. These actions would be used for effect apply,
+     * effect probe, effect download.
+     */
+    @IntDef({
+            EFFECT_PREFERENCE_UNSPECIFIED,
+            EFFECT_APPLIED_ON_SUCCESS,
+            EFFECT_APPLIED_ON_FAILED,
+            EFFECT_APPLIED_OFF,
+            EFFECT_APPLIED_ABORTED,
+            EFFECT_APPLIED_STARTED
+            })
+    @interface EffectStatus {
     }
 }

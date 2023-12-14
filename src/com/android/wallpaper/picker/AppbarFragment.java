@@ -15,18 +15,28 @@
  */
 package com.android.wallpaper.picker;
 
+import static android.view.View.GONE;
+import static android.view.View.VISIBLE;
+
+import android.annotation.MenuRes;
+import android.content.Context;
+import android.graphics.drawable.Drawable;
 import android.os.Bundle;
 import android.text.TextUtils;
 import android.view.MenuItem;
 import android.view.View;
 import android.widget.TextView;
+import android.widget.Toolbar;
+import android.widget.Toolbar.OnMenuItemClickListener;
 
-import androidx.annotation.MenuRes;
-import androidx.appcompat.widget.Toolbar;
-import androidx.appcompat.widget.Toolbar.OnMenuItemClickListener;
+import androidx.annotation.Nullable;
 
 import com.android.wallpaper.R;
+import com.android.wallpaper.config.BaseFlags;
+import com.android.wallpaper.util.ResourceUtils;
 import com.android.wallpaper.widget.BottomActionBar;
+
+import com.google.android.material.transition.MaterialSharedAxis;
 
 /**
  * Base class for Fragments that own a {@link Toolbar} widget and a {@link BottomActionBar}.
@@ -46,6 +56,40 @@ public abstract class AppbarFragment extends BottomActionBarFragment
         implements OnMenuItemClickListener {
 
     private static final String ARG_TITLE = "ToolbarFragment.title";
+    private AppbarFragmentHost mHost;
+    private boolean mUpArrowEnabled;
+
+    /**
+     * Interface to be implemented by an Activity hosting a {@link AppbarFragment}.
+     */
+    public interface AppbarFragmentHost {
+        /**
+         * Called when a up arrow had been pressed.
+         */
+        void onUpArrowPressed();
+
+        /**
+         * Check if it supports up arrow.
+         */
+        boolean isUpArrowSupported();
+    }
+
+    @Override
+    public void onCreate(@Nullable Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        if (BaseFlags.get().isPageTransitionsFeatureEnabled(requireContext())) {
+            setEnterTransition(new MaterialSharedAxis(MaterialSharedAxis.X, /* forward */ true));
+            setReturnTransition(new MaterialSharedAxis(MaterialSharedAxis.X, /* forward */ false));
+            setExitTransition(new MaterialSharedAxis(MaterialSharedAxis.X, /* forward */ true));
+            setReenterTransition(new MaterialSharedAxis(MaterialSharedAxis.X, /* forward */ false));
+        }
+    }
+
+    @Override
+    public void onAttach(Context context) {
+        super.onAttach(context);
+        mHost = (AppbarFragmentHost) context;
+    }
 
     /**
      * Returns a newly created {@link Bundle} containing the given title as an argument.
@@ -63,12 +107,29 @@ public abstract class AppbarFragment extends BottomActionBarFragment
 
     /**
      * Configures a toolbar in the given rootView, with id {@code toolbar} and sets its title to
-     * the value in Arguments or {@link #getDefaultTitle()}
+     * the value in Arguments or {@link #getDefaultTitle()}.
+     * Default upArrow value is true.
      */
     public void setUpToolbar(View rootView) {
-        mToolbar = rootView.findViewById(R.id.toolbar);
+        setUpToolbar(rootView, /* upArrow= */ true);
+    }
+
+    /**
+     * Configures a toolbar in the given rootView, inflating the menu corresponding to the given id
+     * for the toolbar menu.
+     *
+     * @param rootView given root view.
+     * @param upArrow  true to enable up arrow feature.
+     */
+    protected void setUpToolbar(View rootView, boolean upArrow) {
+        mUpArrowEnabled = upArrow;
+        mToolbar = rootView.findViewById(getToolbarId());
 
         mTitleView = mToolbar.findViewById(R.id.custom_toolbar_title);
+
+        // Update toolbar and status bar color.
+        setToolbarColor(getToolbarColorId());
+
         CharSequence title;
         if (getArguments() != null) {
             title = getArguments().getCharSequence(ARG_TITLE, getDefaultTitle());
@@ -78,6 +139,57 @@ public abstract class AppbarFragment extends BottomActionBarFragment
         if (!TextUtils.isEmpty(title)) {
             setTitle(title);
         }
+
+        if (upArrow && mHost.isUpArrowSupported()) {
+            setUpUpArrow();
+        }
+    }
+
+    /**
+     * Configures the menu in the toolbar.
+     *
+     * @param menuResId the resource id of the menu
+     */
+    public void setUpToolbarMenu(@MenuRes int menuResId) {
+        mToolbar.inflateMenu(menuResId);
+        mToolbar.setOnMenuItemClickListener(this);
+    }
+
+    protected void setUpToolbarMenuClickListener(int menuItemResId, View.OnClickListener listener) {
+        MenuItem menuItem = mToolbar.getMenu().findItem(menuItemResId);
+        menuItem.getActionView().setOnClickListener(listener);
+    }
+
+    protected int getToolbarId() {
+        return R.id.toolbar;
+    }
+
+    protected int getToolbarColorId() {
+        return R.color.toolbar_color;
+    }
+
+    protected int getToolbarTextColor() {
+        return ResourceUtils.getColorAttr(getActivity(), android.R.attr.textColorPrimary);
+    }
+
+    /**
+     * Set up arrow feature status to enabled or not. Enable it for updating
+     * onBottomActionBarReady() while initializing without toolbar setup.
+     *
+     * @param upArrow true to enable up arrow feature.
+     */
+    public void setUpArrowEnabled(boolean upArrow) {
+        mUpArrowEnabled = upArrow;
+    }
+
+    private void setUpUpArrow() {
+        Drawable backIcon = getResources().getDrawable(R.drawable.material_ic_arrow_back_black_24,
+                null).mutate();
+        backIcon.setAutoMirrored(true);
+        backIcon.setTint(getToolbarTextColor());
+        mToolbar.setNavigationIcon(backIcon);
+        mToolbar.setNavigationContentDescription(R.string.bottom_action_bar_back);
+        mToolbar.setNavigationOnClickListener(v -> mHost.onUpArrowPressed());
     }
 
     /**
@@ -88,8 +200,13 @@ public abstract class AppbarFragment extends BottomActionBarFragment
      */
     public void setUpToolbar(View rootView, @MenuRes int menuResId) {
         setUpToolbar(rootView);
-        mToolbar.inflateMenu(menuResId);
-        mToolbar.setOnMenuItemClickListener(this);
+        setUpToolbarMenu(menuResId);
+    }
+
+    protected void setToolbarColor(int colorId) {
+        mToolbar.setBackgroundResource(colorId);
+        getActivity().getWindow().setStatusBarColor(
+                getActivity().getResources().getColor(colorId));
     }
 
     /**
@@ -112,8 +229,10 @@ public abstract class AppbarFragment extends BottomActionBarFragment
         if (mTitleView != null) {
             mToolbar.setTitle(null);
             mTitleView.setText(title);
+            mTitleView.setTextColor(getToolbarTextColor());
         } else {
             mToolbar.setTitle(title);
+            mToolbar.setTitleTextColor(getToolbarTextColor());
         }
 
         // Set Activity title to make TalkBack announce title after updating toolbar title.
@@ -122,6 +241,13 @@ public abstract class AppbarFragment extends BottomActionBarFragment
             getActivity().setTitle(TextUtils.isEmpty(accessibilityTitle) ? title
                     : accessibilityTitle);
         }
+    }
+
+    @Override
+    protected void onBottomActionBarReady(BottomActionBar bottomActionBar) {
+        bottomActionBar.setBackButtonVisibility(
+                mUpArrowEnabled && mHost.isUpArrowSupported() ? GONE : VISIBLE);
+        super.onBottomActionBarReady(bottomActionBar);
     }
 
     @Override

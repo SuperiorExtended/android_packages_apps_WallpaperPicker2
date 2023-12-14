@@ -17,23 +17,34 @@
     style="@style/FullContentPreviewCard"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:clipChildren="true"
     android:contentDescription="@string/wallpaper_preview_card_content_description">
 
-    <ImageView
-        android:id="@+id/wallpaper_preview_image"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="@color/primary_color" />
-
-    <SurfaceView
+    <com.android.wallpaper.picker.customization.ui.view.WallpaperSurfaceView
         android:id="@+id/wallpaper_surface"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
     <SurfaceView
+        android:id="@+id/wallpaper_surface_cinematic"
+        android:visibility="gone"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- A 30% opacity black scrim that can be shown to "dim" the wallpaper. -->
+    <View
+        android:id="@+id/wallpaper_dimming_scrim"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/wallpaper_preview_scrim_color"
+        android:visibility="invisible"
+        android:importantForAccessibility="noHideDescendants" />
+
+    <SurfaceView
         android:id="@+id/workspace_surface"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:visibility="invisible"
         android:importantForAccessibility="noHideDescendants" />
 
     <FrameLayout
@@ -42,10 +53,30 @@
         android:layout_height="match_parent"
         android:importantForAccessibility="noHideDescendants" />
 
-    <View
-        android:id="@+id/fade_cover"
+    <androidx.core.widget.ContentLoadingProgressBar
+        android:id="@+id/wallpaper_preview_spinner"
+        style="?android:progressBarStyleLarge"
+        android:background="@android:color/transparent"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:visibility="gone" />
+
+    <ImageView
+        android:id="@+id/wallpaper_fadein_scrim"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:alpha="0"
-        android:background="@color/preview_pager_background" />
+        android:background="@color/color_surface"
+        android:forceHasOverlappingRendering="false"
+        android:importantForAccessibility="no"
+        android:visibility="invisible" />
+
+    <ImageView
+        android:id="@+id/loading_view"
+        android:layerType="hardware"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="centerCrop"
+        android:importantForAccessibility="no" />
+
 </androidx.cardview.widget.CardView>

@@ -15,12 +15,12 @@
  */
 package com.android.wallpaper.module;
 
-import android.content.Context;
+import android.app.WallpaperManager;
 
 import androidx.annotation.Nullable;
 
-import com.android.wallpaper.compat.WallpaperManagerCompat;
-import com.android.wallpaper.model.CurrentWallpaperInfoVN;
+import com.android.wallpaper.model.CurrentWallpaperInfo;
+import com.android.wallpaper.model.LiveWallpaperMetadata;
 import com.android.wallpaper.model.WallpaperInfo;
 import com.android.wallpaper.module.WallpaperPreferences.PresentationMode;
 
@@ -30,7 +30,6 @@ import com.android.wallpaper.module.WallpaperPreferences.PresentationMode;
  */
 public class DefaultCurrentWallpaperInfoFactory implements CurrentWallpaperInfoFactory {
 
-    private final Context mAppContext;
     private final WallpaperRefresher mWallpaperRefresher;
     private final LiveWallpaperInfoFactory mLiveWallpaperInfoFactory;
 
@@ -41,17 +40,17 @@ public class DefaultCurrentWallpaperInfoFactory implements CurrentWallpaperInfoF
     @PresentationMode
     private int mPresentationMode;
 
-    public DefaultCurrentWallpaperInfoFactory(Context context) {
-        mAppContext = context.getApplicationContext();
-        Injector injector = InjectorProvider.getInjector();
-        mWallpaperRefresher = injector.getWallpaperRefresher(mAppContext);
-        mLiveWallpaperInfoFactory = injector.getLiveWallpaperInfoFactory(mAppContext);
+    public DefaultCurrentWallpaperInfoFactory(WallpaperRefresher wallpaperRefresher,
+            LiveWallpaperInfoFactory liveWallpaperInfoFactory) {
+        mWallpaperRefresher = wallpaperRefresher;
+        mLiveWallpaperInfoFactory = liveWallpaperInfoFactory;
     }
 
     @Override
     public synchronized void createCurrentWallpaperInfos(final WallpaperInfoCallback callback,
                                                          boolean forceRefresh) {
-        if (!forceRefresh && mHomeWallpaper != null) {
+        if (!forceRefresh && mHomeWallpaper != null
+                && mPresentationMode != WallpaperPreferences.PRESENTATION_MODE_ROTATING) {
             callback.onWallpaperInfoCreated(mHomeWallpaper, mLockWallpaper, mPresentationMode);
             return;
         }
@@ -60,36 +59,41 @@ public class DefaultCurrentWallpaperInfoFactory implements CurrentWallpaperInfoF
         // Refresher so that multiple calls to this method after a call with forceRefresh=true don't
         // provide old cached copies.
         if (forceRefresh) {
-            mHomeWallpaper = null;
-            mLockWallpaper = null;
+            clearCurrentWallpaperInfos();
         }
 
         mWallpaperRefresher.refresh(
                 (homeWallpaperMetadata, lockWallpaperMetadata, presentationMode) -> {
                     WallpaperInfo homeWallpaper;
-                    if (homeWallpaperMetadata.getWallpaperComponent() == null) {
-                        homeWallpaper = new CurrentWallpaperInfoVN(
+                    if (homeWallpaperMetadata instanceof LiveWallpaperMetadata) {
+                        homeWallpaper = mLiveWallpaperInfoFactory.getLiveWallpaperInfo(
+                                homeWallpaperMetadata.getWallpaperComponent());
+                    } else {
+                        homeWallpaper = new CurrentWallpaperInfo(
                                 homeWallpaperMetadata.getAttributions(),
                                 homeWallpaperMetadata.getActionUrl(),
                                 homeWallpaperMetadata.getActionLabelRes(),
                                 homeWallpaperMetadata.getActionIconRes(),
                                 homeWallpaperMetadata.getCollectionId(),
-                                WallpaperManagerCompat.FLAG_SYSTEM);
-                    } else {
-                        homeWallpaper = mLiveWallpaperInfoFactory.getLiveWallpaperInfo(
-                                homeWallpaperMetadata.getWallpaperComponent());
+                                WallpaperManager.FLAG_SYSTEM);
                     }
 
                     WallpaperInfo lockWallpaper = null;
 
                     if (lockWallpaperMetadata != null) {
-                        lockWallpaper = new CurrentWallpaperInfoVN(
-                                lockWallpaperMetadata.getAttributions(),
-                                lockWallpaperMetadata.getActionUrl(),
-                                lockWallpaperMetadata.getActionLabelRes(),
-                                lockWallpaperMetadata.getActionIconRes(),
-                                lockWallpaperMetadata.getCollectionId(),
-                                WallpaperManagerCompat.FLAG_LOCK);
+
+                        if (lockWallpaperMetadata instanceof LiveWallpaperMetadata) {
+                            lockWallpaper = mLiveWallpaperInfoFactory.getLiveWallpaperInfo(
+                                    lockWallpaperMetadata.getWallpaperComponent());
+                        } else {
+                            lockWallpaper = new CurrentWallpaperInfo(
+                                    lockWallpaperMetadata.getAttributions(),
+                                    lockWallpaperMetadata.getActionUrl(),
+                                    lockWallpaperMetadata.getActionLabelRes(),
+                                    lockWallpaperMetadata.getActionIconRes(),
+                                    lockWallpaperMetadata.getCollectionId(),
+                                    WallpaperManager.FLAG_LOCK);
+                        }
                     }
 
                     mHomeWallpaper = homeWallpaper;
@@ -98,5 +102,11 @@ public class DefaultCurrentWallpaperInfoFactory implements CurrentWallpaperInfoF
 
                     callback.onWallpaperInfoCreated(homeWallpaper, lockWallpaper, presentationMode);
                 });
+    }
+
+    @Override
+    public void clearCurrentWallpaperInfos() {
+        mHomeWallpaper = null;
+        mLockWallpaper = null;
     }
 }

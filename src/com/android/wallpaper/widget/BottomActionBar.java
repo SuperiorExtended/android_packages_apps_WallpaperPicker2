@@ -20,16 +20,25 @@ import static com.google.android.material.bottomsheet.BottomSheetBehavior.STATE_
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.res.ColorStateList;
+import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.accessibility.AccessibilityEvent;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
+import android.widget.ProgressBar;
 
+import androidx.annotation.LayoutRes;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.core.widget.ImageViewCompat;
 
+import com.android.internal.util.ArrayUtils;
 import com.android.wallpaper.R;
+import com.android.wallpaper.util.ResourceUtils;
 import com.android.wallpaper.util.SizeCalculator;
 
 import com.google.android.material.bottomsheet.BottomSheetBehavior;
@@ -92,14 +101,90 @@ public class BottomActionBar extends FrameLayout {
         void onBottomSheetExpanded();
     }
 
+    /**
+     * Object to host content view for bottom sheet to display.
+     *
+     * <p> The view would be created in the constructor.
+     */
+    public static abstract class BottomSheetContent<T extends View> {
+
+        private T mContentView;
+        private boolean mIsVisible;
+
+        public BottomSheetContent(Context context) {
+            mContentView = createView(context);
+            setVisibility(false);
+        }
+
+        /** Gets the view id to inflate. */
+        @LayoutRes
+        public abstract int getViewId();
+
+        /** Gets called when the content view is created. */
+        public abstract void onViewCreated(T view);
+
+        /** Gets called when the current content view is going to recreate. */
+        public void onRecreateView(T oldView) {}
+
+        private void recreateView(Context context) {
+            // Inform that the view is going to recreate.
+            onRecreateView(mContentView);
+            // Create a new view with the given context.
+            mContentView = createView(context);
+            setVisibility(mIsVisible);
+        }
+
+        private T createView(Context context) {
+            T contentView = (T) LayoutInflater.from(context).inflate(getViewId(), null);
+            onViewCreated(contentView);
+            contentView.setFocusable(true);
+            return contentView;
+        }
+
+        protected void setVisibility(boolean isVisible) {
+            mIsVisible = isVisible;
+            mContentView.setVisibility(mIsVisible ? VISIBLE : GONE);
+        }
+    }
+
     // TODO(b/154299462): Separate downloadable related actions from WallpaperPicker.
     /** The action items in the bottom action bar. */
     public enum BottomAction {
-        ROTATION, DELETE, INFORMATION, EDIT, CUSTOMIZE, DOWNLOAD, PROGRESS, APPLY
+        ROTATION,
+        DELETE,
+        INFORMATION(R.string.accessibility_info_shown, R.string.accessibility_info_hidden),
+        EDIT,
+        CUSTOMIZE(R.string.accessibility_customize_shown, R.string.accessibility_customize_hidden),
+        EFFECTS,
+        DOWNLOAD,
+        PROGRESS,
+        APPLY,
+        APPLY_TEXT;
+
+        private final int mShownAccessibilityResId;
+        private final int mHiddenAccessibilityResId;
+
+        BottomAction() {
+            this(/* shownAccessibilityLabelResId= */ 0, /* shownAccessibilityLabelResId= */ 0);
+        }
+
+        BottomAction(int shownAccessibilityLabelResId, int hiddenAccessibilityLabelResId) {
+            mShownAccessibilityResId = shownAccessibilityLabelResId;
+            mHiddenAccessibilityResId = hiddenAccessibilityLabelResId;
+        }
+
+        /**
+         * Returns the string resource id of the currently bottom action for its shown or hidden
+         * state.
+         */
+        public int getAccessibilityStringRes(boolean isShown) {
+            return isShown ? mShownAccessibilityResId : mHiddenAccessibilityResId;
+        }
     }
 
     private final Map<BottomAction, View> mActionMap = new EnumMap<>(BottomAction.class);
-    private final Map<BottomAction, View> mContentViewMap = new EnumMap<>(BottomAction.class);
+    private final Map<BottomAction, BottomSheetContent<?>> mContentViewMap =
+            new EnumMap<>(BottomAction.class);
     private final Map<BottomAction, OnActionSelectedListener> mActionSelectedListeners =
             new EnumMap<>(BottomAction.class);
 
@@ -109,6 +194,8 @@ public class BottomActionBar extends FrameLayout {
 
     // The current selected action in the BottomActionBar, can be null when no action is selected.
     @Nullable private BottomAction mSelectedAction;
+    // The last selected action in the BottomActionBar.
+    @Nullable private BottomAction mLastSelectedAction;
     @Nullable private AccessibilityCallback mAccessibilityCallback;
 
     public BottomActionBar(@NonNull Context context, @Nullable AttributeSet attrs) {
@@ -120,12 +207,15 @@ public class BottomActionBar extends FrameLayout {
         mActionMap.put(BottomAction.INFORMATION, findViewById(R.id.action_information));
         mActionMap.put(BottomAction.EDIT, findViewById(R.id.action_edit));
         mActionMap.put(BottomAction.CUSTOMIZE, findViewById(R.id.action_customize));
+        mActionMap.put(BottomAction.EFFECTS, findViewById(R.id.action_effects));
         mActionMap.put(BottomAction.DOWNLOAD, findViewById(R.id.action_download));
         mActionMap.put(BottomAction.PROGRESS, findViewById(R.id.action_progress));
         mActionMap.put(BottomAction.APPLY, findViewById(R.id.action_apply));
+        mActionMap.put(BottomAction.APPLY_TEXT, findViewById(R.id.action_apply_text_button));
 
         mBottomSheetView = findViewById(R.id.action_bottom_sheet);
         SizeCalculator.adjustBackgroundCornerRadius(mBottomSheetView);
+        setColor(context);
 
         mBottomSheetBehavior = (QueueStateBottomSheetBehavior<ViewGroup>) BottomSheetBehavior.from(
                 mBottomSheetView);
@@ -170,30 +260,31 @@ public class BottomActionBar extends FrameLayout {
                     windowInsets.getSystemWindowInsetBottom());
             return windowInsets;
         });
+
+        // Skip "info selected" and "customize selected" Talkback while double tapping on info and
+        // customize action.
+        skipAccessibilityEvent(new BottomAction[]{BottomAction.INFORMATION, BottomAction.CUSTOMIZE},
+                new int[]{AccessibilityEvent.TYPE_VIEW_CLICKED,
+                        AccessibilityEvent.TYPE_VIEW_SELECTED});
     }
 
     @Override
     public void onVisibilityAggregated(boolean isVisible) {
         super.onVisibilityAggregated(isVisible);
-        if (!isVisible) {
-            hideBottomSheetAndDeselectButtonIfExpanded();
-            mBottomSheetBehavior.reset();
-        }
         mVisibilityChangeListeners.forEach(listener -> listener.onVisibilityChange(isVisible));
     }
 
     /**
-     * Adds content view to the bottom sheet and binds with a {@code BottomAction} to
-     * expand / collapse the bottom sheet.
+     * Binds the {@code bottomSheetContent} with the {@code action}, the {@code action} button
+     * would be able to expand/collapse the bottom sheet to show the content.
      *
-     * @param contentView the view with content to be added on the bottom sheet
+     * @param bottomSheetContent the content object with view being added to the bottom sheet
      * @param action the action to be bound to expand / collapse the bottom sheet
      */
-    public void attachViewToBottomSheetAndBindAction(View contentView, BottomAction action) {
-        contentView.setVisibility(GONE);
-        contentView.setFocusable(true);
-        mContentViewMap.put(action, contentView);
-        mBottomSheetView.addView(contentView);
+    public void bindBottomSheetContentWithAction(BottomSheetContent<?> bottomSheetContent,
+            BottomAction action) {
+        mContentViewMap.put(action, bottomSheetContent);
+        mBottomSheetView.addView(bottomSheetContent.mContentView);
         setActionClickListener(action, actionView -> {
             if (mBottomSheetBehavior.getState() == STATE_COLLAPSED) {
                 updateContentViewFor(action);
@@ -205,6 +296,15 @@ public class BottomActionBar extends FrameLayout {
     /** Collapses the bottom sheet. */
     public void collapseBottomSheetIfExpanded() {
         hideBottomSheetAndDeselectButtonIfExpanded();
+    }
+
+    /** Enables or disables action buttons that show the bottom sheet. */
+    public void enableActionButtonsWithBottomSheet(boolean enabled) {
+        if (enabled) {
+            enableActions(mContentViewMap.keySet().toArray(new BottomAction[0]));
+        } else {
+            disableActions(mContentViewMap.keySet().toArray(new BottomAction[0]));
+        }
     }
 
     /**
@@ -236,7 +336,8 @@ public class BottomActionBar extends FrameLayout {
                 mSelectedAction = null;
             } else {
                 // Select a different action from the current selected action.
-                mSelectedAction = bottomAction;
+                // Also keep the same action for unselected case for a11y.
+                mLastSelectedAction = mSelectedAction = bottomAction;
                 updateSelectedState(mSelectedAction, /* selected= */ true);
                 if (isExpandable(mSelectedAction)) {
                     mBottomSheetBehavior.enqueue(STATE_EXPANDED);
@@ -261,6 +362,11 @@ public class BottomActionBar extends FrameLayout {
                     "Had already set a selected listener to button: " + bottomAction);
         }
         mActionSelectedListeners.put(bottomAction, actionSelectedListener);
+    }
+
+    /** Set back button visibility. */
+    public void setBackButtonVisibility(int visibility) {
+        findViewById(R.id.action_back).setVisibility(visibility);
     }
 
     /** Binds the cancel button to back key. */
@@ -329,6 +435,15 @@ public class BottomActionBar extends FrameLayout {
                 hideBottomSheetAndDeselectButtonIfExpanded();
             }
         }
+    }
+
+    /**
+     * Focus the specific action.
+     *
+     * @param action the specific action
+     */
+    public void focusAccessibilityAction(BottomAction action) {
+        mActionMap.get(action).sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_FOCUSED);
     }
 
     /**
@@ -424,6 +539,11 @@ public class BottomActionBar extends FrameLayout {
         return mActionMap.get(action).isSelected();
     }
 
+    /** Returns {@code true} if the state of bottom sheet is collapsed. */
+    public boolean isBottomSheetCollapsed() {
+        return mBottomSheetBehavior.getState() == STATE_COLLAPSED;
+    }
+
     /** Resets {@link BottomActionBar} to initial state. */
     public void reset() {
         // Not visible by default, see res/layout/bottom_action_bar.xml
@@ -442,6 +562,48 @@ public class BottomActionBar extends FrameLayout {
         mBottomSheetView.removeAllViews();
         mBottomSheetBehavior.reset();
         mSelectedAction = null;
+    }
+
+    /** Dynamic update color with {@code Context}. */
+    public void setColor(Context context) {
+        // Set bottom sheet background.
+        mBottomSheetView.setBackground(context.getDrawable(R.drawable.bottom_sheet_background));
+        if (mBottomSheetView.getChildCount() > 0) {
+            // Update the bottom sheet content view if any.
+            mBottomSheetView.removeAllViews();
+            mContentViewMap.values().forEach(bottomSheetContent -> {
+                bottomSheetContent.recreateView(context);
+                mBottomSheetView.addView(bottomSheetContent.mContentView);
+            });
+        }
+
+        // Set the bar background and action buttons.
+        ViewGroup actionTabs = findViewById(R.id.action_tabs);
+        actionTabs.setBackgroundColor(
+                ResourceUtils.getColorAttr(context, android.R.attr.colorBackground));
+        ColorStateList colorStateList = context.getColorStateList(
+                R.color.bottom_action_button_color_tint);
+        for (int i = 0; i < actionTabs.getChildCount(); i++) {
+            View v = actionTabs.getChildAt(i);
+            if (v instanceof ImageView) {
+                v.setBackground(context.getDrawable(R.drawable.bottom_action_button_background));
+                ImageViewCompat.setImageTintList((ImageView) v, colorStateList);
+            } else if (v instanceof ProgressBar) {
+                ((ProgressBar) v).setIndeterminateTintList(colorStateList);
+            }
+        }
+    }
+
+    /** Sets action button accessibility traversal after. */
+    public void setActionAccessibilityTraversalAfter(BottomAction action, int afterId) {
+        View bottomActionView = mActionMap.get(action);
+        bottomActionView.setAccessibilityTraversalAfter(afterId);
+    }
+
+    /** Sets action button accessibility traversal before. */
+    public void setActionAccessibilityTraversalBefore(BottomAction action, int beforeId) {
+        View bottomActionView = mActionMap.get(action);
+        bottomActionView.setAccessibilityTraversalBefore(beforeId);
     }
 
     private void updateSelectedState(BottomAction bottomAction, boolean selected) {
@@ -466,7 +628,7 @@ public class BottomActionBar extends FrameLayout {
     }
 
     private void updateContentViewFor(BottomAction action) {
-        mContentViewMap.forEach((a, v) -> v.setVisibility(a.equals(action) ? VISIBLE : GONE));
+        mContentViewMap.forEach((a, content) -> content.setVisibility(a.equals(action)));
     }
 
     private boolean isExpandable(BottomAction action) {
@@ -479,9 +641,48 @@ public class BottomActionBar extends FrameLayout {
         }
 
         if (state == STATE_COLLAPSED) {
+            CharSequence text = getAccessibilityText(mLastSelectedAction, /* isShown= */ false);
+            if (!TextUtils.isEmpty(text)) {
+                setAccessibilityPaneTitle(text);
+            }
             mAccessibilityCallback.onBottomSheetCollapsed();
         } else if (state == STATE_EXPANDED) {
+            CharSequence text = getAccessibilityText(mSelectedAction, /* isShown= */ true);
+            if (!TextUtils.isEmpty(text)) {
+                setAccessibilityPaneTitle(text);
+            }
             mAccessibilityCallback.onBottomSheetExpanded();
+        }
+    }
+
+    private CharSequence getAccessibilityText(BottomAction action, boolean isShown) {
+        if (action == null) {
+            return null;
+        }
+        int resId = action.getAccessibilityStringRes(isShown);
+        if (resId != 0) {
+            return mContext.getText(resId);
+        }
+        return null;
+    }
+
+    /**
+     * Skip bottom action's Accessibility event.
+     *
+     * @param actions the {@link BottomAction} actions to be skipped.
+     * @param eventTypes the {@link AccessibilityEvent} event types to be skipped.
+     */
+    private void skipAccessibilityEvent(BottomAction[] actions, int[] eventTypes) {
+        for (BottomAction action : actions) {
+            View view = mActionMap.get(action);
+            view.setAccessibilityDelegate(new AccessibilityDelegate() {
+                @Override
+                public void sendAccessibilityEvent(View host, int eventType) {
+                    if (!ArrayUtils.contains(eventTypes, eventType)) {
+                        super.sendAccessibilityEvent(host, eventType);
+                    }
+                }
+            });
         }
     }
 

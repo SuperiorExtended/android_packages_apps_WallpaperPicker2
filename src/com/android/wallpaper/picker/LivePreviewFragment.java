@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 The Android Open Source Project
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,10 +15,11 @@
  */
 package com.android.wallpaper.picker;
 
-import static com.android.wallpaper.widget.BottomActionBar.BottomAction.APPLY;
-import static com.android.wallpaper.widget.BottomActionBar.BottomAction.CUSTOMIZE;
-import static com.android.wallpaper.widget.BottomActionBar.BottomAction.DELETE;
-import static com.android.wallpaper.widget.BottomActionBar.BottomAction.INFORMATION;
+import static android.app.Activity.RESULT_OK;
+import static android.view.View.GONE;
+import static android.view.View.VISIBLE;
+
+import static com.android.wallpaper.module.WallpaperPersister.destinationToFlags;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
@@ -27,523 +28,580 @@ import android.app.WallpaperColors;
 import android.app.WallpaperInfo;
 import android.app.WallpaperManager;
 import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
-import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
-import android.content.pm.ServiceInfo;
-import android.graphics.Point;
-import android.graphics.Rect;
-import android.graphics.RectF;
-import android.graphics.drawable.ColorDrawable;
-import android.graphics.drawable.Drawable;
+import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.RemoteException;
 import android.service.wallpaper.IWallpaperConnection;
 import android.service.wallpaper.WallpaperService;
 import android.service.wallpaper.WallpaperSettingsActivity;
-import android.text.TextUtils;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.animation.AnimationUtils;
 import android.widget.ImageView;
 
+import androidx.activity.OnBackPressedCallback;
+import androidx.activity.result.ActivityResultCallback;
+import androidx.activity.result.ActivityResultLauncher;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-import androidx.cardview.widget.CardView;
-import androidx.constraintlayout.widget.ConstraintLayout;
-import androidx.constraintlayout.widget.ConstraintSet;
-import androidx.lifecycle.LiveData;
-import androidx.slice.Slice;
-import androidx.slice.widget.SliceLiveData;
-import androidx.slice.widget.SliceView;
+import androidx.fragment.app.FragmentActivity;
 
 import com.android.wallpaper.R;
-import com.android.wallpaper.compat.BuildCompat;
-import com.android.wallpaper.module.WallpaperPersister.SetWallpaperCallback;
-import com.android.wallpaper.util.ScreenSizeCalculator;
-import com.android.wallpaper.util.SizeCalculator;
+import com.android.wallpaper.model.CreativeWallpaperInfo;
+import com.android.wallpaper.model.SetWallpaperViewModel;
+import com.android.wallpaper.model.WallpaperAction;
+import com.android.wallpaper.model.WallpaperInfo.ColorInfo;
+import com.android.wallpaper.module.WallpaperPersister;
+import com.android.wallpaper.util.DeletableUtils;
+import com.android.wallpaper.util.ResourceUtils;
+import com.android.wallpaper.util.RtlUtils;
 import com.android.wallpaper.util.WallpaperConnection;
-import com.android.wallpaper.util.WallpaperSurfaceCallback;
-import com.android.wallpaper.widget.BottomActionBar;
-import com.android.wallpaper.widget.BottomActionBar.AccessibilityCallback;
-import com.android.wallpaper.widget.LiveTileOverlay;
-import com.android.wallpaper.widget.LockScreenPreviewer;
+import com.android.wallpaper.util.WallpaperSurfaceCallback2;
+import com.android.wallpaper.widget.FloatingSheet;
 import com.android.wallpaper.widget.WallpaperColorsLoader;
-import com.android.wallpaper.widget.WallpaperInfoView;
+import com.android.wallpaper.widget.WallpaperControlButtonGroup;
+import com.android.wallpaper.widget.floatingsheetcontent.PreviewCustomizeSettingsContent;
+import com.android.wallpaper.widget.floatingsheetcontent.WallpaperActionSelectionBottomSheetContent;
+import com.android.wallpaper.widget.floatingsheetcontent.WallpaperActionsToggleAdapter;
 
-import com.google.android.material.tabs.TabLayout;
-
-import java.util.Locale;
+import java.util.ArrayList;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Fragment which displays the UI for previewing an individual live wallpaper, its attribution
  * information and settings slices if available.
  */
-public class LivePreviewFragment extends PreviewFragment implements
-        WallpaperConnection.WallpaperConnectionListener {
+public class LivePreviewFragment extends PreviewFragment {
 
     public static final String EXTRA_LIVE_WALLPAPER_INFO = "android.live_wallpaper.info";
     public static final String KEY_ACTION_DELETE_LIVE_WALLPAPER = "action_delete_live_wallpaper";
 
     private static final String TAG = "LivePreviewFragment";
-
+    private static final String KEY_TOOLBAR_GONE = "toolbar_gone";
+    private static final ExecutorService sExecutorService = Executors.newCachedThreadPool();
+    private ActivityResultLauncher<Void> mSettingsActivityResult;
+    private ActivityResultLauncher<Void> mShareActivityResult;
+    private Intent mSettingsActivityIntent;
+    private WallpaperActionSelectionBottomSheetContent mWallpaperActionSelectionBottomSheetContent;
+    private OnBackPressedCallback mSettingsOnBackPressedCallback;
+    private boolean mHasCalledOnSaveInstanceState = false;
+    private boolean mHideOverlaysForShowingSettingsActivity = false;
+    private Future<ColorInfo> mColorFuture;
     /**
      * Instance of {@link WallpaperConnection} used to bind to the live wallpaper service to show
      * it in this preview fragment.
+     *
      * @see IWallpaperConnection
      */
-    protected WallpaperConnection mWallpaperConnection;
-    protected WallpaperInfoView mWallpaperInfoView;
-    protected CardView mHomePreviewCard;
-    protected ImageView mHomePreview;
-
-    private final int[] mLivePreviewLocation = new int[2];
-    private final Rect mPreviewLocalRect = new Rect();
-    private final Rect mPreviewGlobalRect = new Rect();
-
-    private Intent mDeleteIntent;
-    private Intent mSettingsIntent;
-
-    private SliceView mSettingsSliceView;
-    private LiveData<Slice> mSettingsLiveData;
-    private View mLoadingScrim;
-    private Point mScreenSize;
-    private ViewGroup mPreviewContainer;
-    private TouchForwardingLayout mTouchForwardingLayout;
-    private SurfaceView mWorkspaceSurface;
+    private WallpaperConnection mWallpaperConnection;
+    private WallpaperSurfaceCallback2 mWallpaperSurfaceCallback;
     private SurfaceView mWallpaperSurface;
-    private ViewGroup mLockPreviewContainer;
-    private LockScreenPreviewer mLockScreenPreviewer;
-    private WorkspaceSurfaceHolderCallback mWorkspaceSurfaceCallback;
-    private WallpaperSurfaceCallback mWallpaperSurfaceCallback;
+
+    @Override
+    protected void setWallpaper(int destination) {
+        WallpaperPersister.SetWallpaperCallback callback = SetWallpaperViewModel.getCallback(
+                mViewModelProvider);
+        if (mWallpaperConnection != null) {
+            try {
+                mWallpaperConnection.setWallpaperFlags(destinationToFlags(destination));
+            } catch (RemoteException e) {
+                callback.onError(e);
+                return;
+            }
+        }
+        mWallpaperSetter.setCurrentWallpaper(getActivity(), mWallpaper, null,
+                destination, 0, null,
+                mWallpaperColors != null ? mWallpaperColors : getColorInfo().getWallpaperColors(),
+                callback);
+    }
+
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        android.app.WallpaperInfo info = mWallpaper.getWallpaperComponent();
-
-        String deleteAction = getDeleteAction(info);
-        if (!TextUtils.isEmpty(deleteAction)) {
-            mDeleteIntent = new Intent(deleteAction);
-            mDeleteIntent.setPackage(info.getPackageName());
-            mDeleteIntent.putExtra(EXTRA_LIVE_WALLPAPER_INFO, info);
-        }
-
-        String settingsActivity = getSettingsActivity(info);
-        if (settingsActivity != null) {
-            mSettingsIntent = new Intent();
-            mSettingsIntent.setComponent(new ComponentName(info.getPackageName(),
-                    settingsActivity));
-            mSettingsIntent.putExtra(WallpaperSettingsActivity.EXTRA_PREVIEW_MODE, true);
-            PackageManager pm = requireContext().getPackageManager();
-            ActivityInfo activityInfo = mSettingsIntent.resolveActivityInfo(pm, 0);
-            if (activityInfo == null) {
-                Log.i(TAG, "Couldn't find wallpaper settings activity: " + settingsActivity);
-                mSettingsIntent = null;
+        Context context = requireContext();
+        mColorFuture = mWallpaper.computeColorInfo(context);
+        mSettingsActivityIntent = getSettingsActivityIntent(getContext(),
+                mWallpaper.getWallpaperComponent());
+        mSettingsOnBackPressedCallback = new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                launchSettingsAsOverlay(/* isLaunched= */ false);
+            }
+        };
+        if (mWallpaper instanceof CreativeWallpaperInfo) {
+            mSettingsActivityResult = registerForActivityResult(
+                    CreativeWallpaperInfo.getContract(mSettingsActivityIntent),
+                    getCreativeWallpaperPreviewResultCallback());
+            CreativeWallpaperInfo creativeWallpaper = (CreativeWallpaperInfo) mWallpaper;
+            if (creativeWallpaper.canBeShared()) {
+                mShareActivityResult = registerForActivityResult(CreativeWallpaperInfo.getContract(
+                                creativeWallpaper.getShareIntent()),
+                        unused -> mWallpaperControlButtonGroup.setChecked(
+                                WallpaperControlButtonGroup.SHARE, /* checked= */ false));
             }
         }
     }
 
-    @Nullable
-    protected String getSettingsActivity(WallpaperInfo info) {
-        return info.getSettingsActivity();
-    }
-
-    protected Intent getWallpaperIntent(WallpaperInfo info) {
-        return new Intent(WallpaperService.SERVICE_INTERFACE)
-                .setClassName(info.getPackageName(), info.getServiceName());
+    private ActivityResultCallback<Integer> getCreativeWallpaperPreviewResultCallback() {
+        return result -> {
+            CreativeWallpaperInfo creativeWallpaper = (CreativeWallpaperInfo) mWallpaper;
+            android.app.WallpaperInfo currentWallpaper = WallpaperManager.getInstance(
+                    getContext()).getWallpaperInfo();
+            if (result == RESULT_OK) {
+                if (creativeWallpaper.canBeDeleted() || creativeWallpaper.isApplied(
+                        currentWallpaper)) {
+                    showOverlays();
+                    overrideOnBackPressed(new OnBackPressedCallback(true) {
+                        @Override
+                        public void handleOnBackPressed() {
+                            getActivity().finish();
+                        }
+                    });
+                } else {
+                    showOverlays();
+                    overrideOnBackPressed(mSettingsOnBackPressedCallback);
+                }
+            } else {
+                // Editing flow of a creative category wallpaper
+                if (creativeWallpaper.canBeDeleted() || creativeWallpaper.isApplied(
+                        currentWallpaper)) {
+                    showOverlays();
+                // Flow where back key is pressed by user from the settings activity
+                } else {
+                    // TODO: This should ideally be a slide transition, but custom slide transition
+                    // does not work properly, so having a fade transition for now
+                    finishActivityWithFadeTransition();
+                }
+            }
+        };
     }
 
     @Override
     public View onCreateView(LayoutInflater inflater, ViewGroup container,
             Bundle savedInstanceState) {
         View view = super.onCreateView(inflater, container, savedInstanceState);
-
-        mLoadingScrim = view.findViewById(R.id.loading);
-        setUpLoadingIndicator();
-
-        Activity activity = requireActivity();
-        mScreenSize = ScreenSizeCalculator.getInstance().getScreenSize(
-                activity.getWindowManager().getDefaultDisplay());
-
-        mWallpaperInfoView = (WallpaperInfoView) LayoutInflater.from(getContext())
-                .inflate(R.layout.wallpaper_info_view, /* root= */ null);
-        setUpExploreIntentAndLabel(
-                () -> mWallpaperInfoView.populateWallpaperInfo(
-                        mWallpaper,
-                        mActionLabel,
-                        WallpaperInfoHelper.shouldShowExploreButton(getContext(), mExploreIntent),
-                        this::onExploreClicked)
-        );
-
-        mPreviewContainer = view.findViewById(R.id.live_wallpaper_preview);
-        mTouchForwardingLayout = view.findViewById(R.id.touch_forwarding_layout);
-        // Set aspect ratio on the preview card.
-        ConstraintSet set = new ConstraintSet();
-        set.clone((ConstraintLayout) mPreviewContainer);
-        String ratio = String.format(Locale.US, "%d:%d", mScreenSize.x, mScreenSize.y);
-        set.setDimensionRatio(mTouchForwardingLayout.getId(), ratio);
-        set.applyTo((ConstraintLayout) mPreviewContainer);
-
-        mHomePreviewCard = mPreviewContainer.findViewById(R.id.wallpaper_full_preview_card);
-        mHomePreview = mHomePreviewCard.findViewById(R.id.wallpaper_preview_image);
-        mTouchForwardingLayout.setTargetView(mHomePreview);
-        mTouchForwardingLayout.setForwardingEnabled(true);
-        mLockPreviewContainer = mPreviewContainer.findViewById(R.id.lock_screen_preview_container);
-        mLockScreenPreviewer = new LockScreenPreviewer(getLifecycle(), activity,
-                mLockPreviewContainer);
-        mWallpaperSurface = mHomePreviewCard.findViewById(R.id.wallpaper_surface);
-        mWorkspaceSurface = mHomePreviewCard.findViewById(R.id.workspace_surface);
-
-        mWorkspaceSurfaceCallback = new WorkspaceSurfaceHolderCallback(
-                mWorkspaceSurface, getContext());
-        mWallpaperSurfaceCallback = new WallpaperSurfaceCallback(getContext(),
-                mHomePreview, mWallpaperSurface);
-
-        TabLayout tabs = inflater.inflate(R.layout.full_preview_tabs,
-                view.findViewById(R.id.toolbar_tabs_container))
-                .findViewById(R.id.full_preview_tabs);
-        tabs.addOnTabSelectedListener(new TabLayout.OnTabSelectedListener() {
-            @Override
-            public void onTabSelected(TabLayout.Tab tab) {
-                updateScreenPreview(tab.getPosition() == 0);
-            }
-
-            @Override
-            public void onTabUnselected(TabLayout.Tab tab) {}
-
-            @Override
-            public void onTabReselected(TabLayout.Tab tab) {}
-        });
-
-        // The TabLayout only contains below tabs, see: full_preview_tabs.xml
-        // 0. Home tab
-        // 1. Lock tab
-        tabs.getTabAt(mViewAsHome ? 0 : 1).select();
-        updateScreenPreview(mViewAsHome);
-
-        view.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
-            @Override
-            public void onLayoutChange(View thisView, int left, int top, int right, int bottom,
-                    int oldLeft, int oldTop, int oldRight, int oldBottom) {
-                mHomePreviewCard.setRadius(SizeCalculator.getPreviewCornerRadius(activity,
-                        mHomePreviewCard.getMeasuredWidth()));
-                view.removeOnLayoutChangeListener(this);
-            }
-        });
+        if (view == null) {
+            return null;
+        }
+        // Live wallpaper surface
+        Context context = requireContext();
+        mWallpaperSurface = view.findViewById(R.id.wallpaper_surface);
+        mWallpaperSurfaceCallback = new WallpaperSurfaceCallback2(context, mWallpaperSurface,
+                mColorFuture, this::previewLiveWallpaper);
+        mWallpaperSurface.getHolder().addCallback(mWallpaperSurfaceCallback);
+        mWallpaperSurface.setZOrderMediaOverlay(true);
+        setUpLiveWallpaperTouchForwarding(mTouchForwardingLayout);
+        showLiveWallpaperControl();
         return view;
     }
 
-    @Override
-    public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
-        super.onViewCreated(view, savedInstanceState);
-        updateWallpaperSurface();
-        setupCurrentWallpaperPreview();
-        renderWorkspaceSurface();
-    }
-
-    private void updateWallpaperSurface() {
-        mWallpaperSurface.getHolder().addCallback(mWallpaperSurfaceCallback);
-    }
-
-    private void updateScreenPreview(boolean isHomeSelected) {
-        mWorkspaceSurface.setVisibility(isHomeSelected ? View.VISIBLE : View.INVISIBLE);
-        mLockPreviewContainer.setVisibility(isHomeSelected ? View.INVISIBLE : View.VISIBLE);
-    }
-
-    private void repositionPreview(ImageView previewView) {
-        previewView.getLocationOnScreen(mLivePreviewLocation);
-        mPreviewGlobalRect.set(0, 0, previewView.getMeasuredWidth(),
-                previewView.getMeasuredHeight());
-        mPreviewLocalRect.set(mPreviewGlobalRect);
-        mPreviewGlobalRect.offset(mLivePreviewLocation[0], mLivePreviewLocation[1]);
-    }
-
-    private void setupCurrentWallpaperPreview() {
-        mHomePreview.setOnTouchListener((v, ev) -> {
-            if (mWallpaperConnection != null && mWallpaperConnection.getEngine() != null) {
-                float scaleRatio =
-                        (float) mTouchForwardingLayout.getWidth() / (float) mScreenSize.x;
-                int action = ev.getActionMasked();
-                if (action == MotionEvent.ACTION_DOWN) {
-                    mBottomActionBar.collapseBottomSheetIfExpanded();
-                }
-                MotionEvent dup = MotionEvent.obtainNoHistory(ev);
-                dup.setLocation(ev.getX() / scaleRatio, ev.getY() / scaleRatio);
-                try {
-                    mWallpaperConnection.getEngine().dispatchPointer(dup);
-                    if (action == MotionEvent.ACTION_UP) {
-                        mWallpaperConnection.getEngine().dispatchWallpaperCommand(
-                                WallpaperManager.COMMAND_TAP,
-                                (int) ev.getX(), (int) ev.getY(), 0, null);
-                    } else if (action == MotionEvent.ACTION_POINTER_UP) {
-                        int pointerIndex = ev.getActionIndex();
-                        mWallpaperConnection.getEngine().dispatchWallpaperCommand(
-                                WallpaperManager.COMMAND_SECONDARY_TAP,
-                                (int) ev.getX(pointerIndex), (int) ev.getY(pointerIndex), 0, null);
-                    }
-                } catch (RemoteException e) {
-                    Log.e(TAG, "Remote exception of wallpaper connection");
-                }
+    private WallpaperActionsToggleAdapter.WallpaperEffectSwitchListener getEffectSwitchListener(
+            Context context, CreativeWallpaperInfo creativeWallpaper) {
+        return (checkedItem) -> {
+            for (WallpaperAction wallpaperActionToggle : creativeWallpaper.getEffectsToggles()) {
+                wallpaperActionToggle.setToggled(false);
             }
+
+            if (checkedItem >= 0) {
+                WallpaperAction currentEffect =
+                        creativeWallpaper.getEffectsToggles().get(
+                                checkedItem);
+                currentEffect.setToggled(true);
+                creativeWallpaper
+                        .setCurrentlyAppliedEffectId(
+                                currentEffect.getEffectId());
+                creativeWallpaper.applyEffect(context,
+                        currentEffect.getApplyActionUri());
+                mWallpaperActionSelectionBottomSheetContent.setCurrentlyAppliedEffect(
+                        currentEffect.getEffectId());
+            } else {
+                creativeWallpaper.setCurrentlyAppliedEffectId(null);
+                creativeWallpaper.clearEffects(context);
+                mWallpaperActionSelectionBottomSheetContent.setCurrentlyAppliedEffect(null);
+            }
+        };
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private void setUpLiveWallpaperTouchForwarding(TouchForwardingLayout touchForwardingLayout) {
+        touchForwardingLayout.setTargetView(mWallpaperSurface);
+        touchForwardingLayout.setForwardingEnabled(true);
+        touchForwardingLayout.setOnClickListener(v -> {
+            toggleWallpaperPreviewControl();
+            mTouchForwardingLayout.announceForAccessibility(
+                    getString(mPreviewScrim.getVisibility() == View.VISIBLE
+                            ? R.string.show_preview_controls_content_description
+                            : R.string.hide_preview_controls_content_description)
+            );
+        });
+        mWallpaperSurface.setOnTouchListener((v, ev) -> {
+            dispatchTouchEventOnLiveWallpaperSurface(ev);
             return false;
         });
     }
 
-    @Override
-    public void onDestroyView() {
-        super.onDestroyView();
-        if (mSettingsLiveData != null && mSettingsLiveData.hasObservers()) {
-            mSettingsLiveData.removeObserver(mSettingsSliceView);
-            mSettingsLiveData = null;
+    private void dispatchTouchEventOnLiveWallpaperSurface(MotionEvent ev) {
+        if (mWallpaperConnection != null && mWallpaperConnection.getEngine() != null) {
+            int action = ev.getActionMasked();
+            MotionEvent dup = MotionEvent.obtainNoHistory(ev);
+            dup.setLocation(ev.getX(), ev.getY());
+            try {
+                mWallpaperConnection.getEngine().dispatchPointer(dup);
+                if (action == MotionEvent.ACTION_UP) {
+                    mWallpaperConnection.getEngine().dispatchWallpaperCommand(
+                            WallpaperManager.COMMAND_TAP,
+                            (int) ev.getX(), (int) ev.getY(), 0, null);
+                } else if (action == MotionEvent.ACTION_POINTER_UP) {
+                    int pointerIndex = ev.getActionIndex();
+                    mWallpaperConnection.getEngine().dispatchWallpaperCommand(
+                            WallpaperManager.COMMAND_SECONDARY_TAP,
+                            (int) ev.getX(pointerIndex), (int) ev.getY(pointerIndex), 0,
+                            null);
+                }
+            } catch (RemoteException e) {
+                Log.e(TAG, "Remote exception of wallpaper connection");
+            }
         }
-        LiveTileOverlay.INSTANCE.detach(mHomePreview.getOverlay());
-        if (mWallpaperConnection != null) {
-            mWallpaperConnection.disconnect();
-            mWallpaperConnection = null;
-        }
-        mWorkspaceSurfaceCallback.cleanUp();
-        mWorkspaceSurface.getHolder().removeCallback(mWorkspaceSurfaceCallback);
-        mWallpaperSurfaceCallback.cleanUp();
-        mWallpaperSurface.getHolder().removeCallback(mWallpaperSurfaceCallback);
     }
 
-    private void previewLiveWallpaper(ImageView thumbnailView) {
-        thumbnailView.post(() -> {
-            Activity activity = getActivity();
-            if (activity == null) {
+    protected void showLiveWallpaperControl() {
+        mSetWallpaperButton.setVisibility(VISIBLE);
+        // TODO (b/242908637): unify delete logic so we don't have to do the instanceof check here
+        if (mWallpaper instanceof CreativeWallpaperInfo) {
+            CreativeWallpaperInfo creativeWallpaper = (CreativeWallpaperInfo) mWallpaper;
+            android.app.WallpaperInfo currentWallpaper = WallpaperManager.getInstance(
+                    getContext()).getWallpaperInfo();
+            mWallpaperControlButtonGroup.showButton(
+                    WallpaperControlButtonGroup.EDIT,
+                    (buttonView, isChecked) -> {
+                        if (isChecked) {
+                            launchSettingsAsOverlay(/* isLaunched= */ false);
+                        }
+                        mWallpaperControlButtonGroup.setChecked(
+                                WallpaperControlButtonGroup.EDIT, false);
+                    });
+            if (!creativeWallpaper.isApplied(currentWallpaper)
+                    && creativeWallpaper.canBeDeleted()) {
+                mWallpaperControlButtonGroup.showButton(
+                        WallpaperControlButtonGroup.DELETE,
+                        (buttonView, isChecked) -> {
+                            if (isChecked) {
+                                showDeleteConfirmDialog(
+                                        () -> creativeWallpaper.requestDelete(requireContext()));
+                            }
+                        });
+            } else {
+                mWallpaperControlButtonGroup.hideButton(WallpaperControlButtonGroup.DELETE);
+            }
+            if (creativeWallpaper.canBeShared() && mShareActivityResult != null) {
+                mWallpaperControlButtonGroup.showButton(
+                        WallpaperControlButtonGroup.SHARE,
+                        (buttonView, isChecked) -> {
+                            if (isChecked) {
+                                mShareActivityResult.launch(null);
+                            }
+                        });
+            }
+
+            if (creativeWallpaper.doesSupportWallpaperEffects()) {
+                showWallpaperEffectsButton();
+            }
+        } else if (DeletableUtils.canBeDeleted(requireContext(),
+                mWallpaper.getWallpaperComponent())) {
+            mWallpaperControlButtonGroup.showButton(WallpaperControlButtonGroup.DELETE,
+                    (buttonView, isChecked) -> {
+                        if (isChecked) {
+                            showDeleteConfirmDialog(() -> {
+                                        Context context = getContext();
+                                        if (context != null) {
+                                            DeletableUtils.deleteLiveWallpaper(context, mWallpaper);
+                                        }
+                                    }
+                            );
+                        }
+                    });
+        }
+        WallpaperInfo info = mWallpaper.getWallpaperComponent();
+        Uri uriSettingsSlice = getSettingsSliceUri(info);
+        if (uriSettingsSlice != null) {
+            mFloatingSheet.putFloatingSheetContent(FloatingSheet.CUSTOMIZE,
+                    new PreviewCustomizeSettingsContent(requireContext(), uriSettingsSlice));
+            mWallpaperControlButtonGroup.showButton(WallpaperControlButtonGroup.CUSTOMIZE,
+                    getFloatingSheetControlButtonChangeListener(
+                            WallpaperControlButtonGroup.CUSTOMIZE, FloatingSheet.CUSTOMIZE));
+        } else if (mSettingsActivityIntent != null
+                && !(mWallpaper instanceof CreativeWallpaperInfo)) {
+            mWallpaperControlButtonGroup.showButton(
+                    WallpaperControlButtonGroup.CUSTOMIZE,
+                    (buttonView, isChecked) -> startActivity(mSettingsActivityIntent));
+        }
+        // update button group top margin
+        ViewGroup.MarginLayoutParams params =
+                (ViewGroup.MarginLayoutParams) mWallpaperControlButtonGroup.getLayoutParams();
+        params.topMargin = getResources().getDimensionPixelSize(
+                R.dimen.wallpaper_control_button_group_margin_top);
+        mWallpaperControlButtonGroup.requestLayout();
+    }
+
+    private void showWallpaperEffectsButton() {
+        mWallpaperControlButtonGroup.showButton(WallpaperControlButtonGroup.EFFECTS,
+                getFloatingSheetControlButtonChangeListener(WallpaperControlButtonGroup.EFFECTS,
+                        FloatingSheet.EFFECTS));
+    }
+
+    private void launchSettingsAsOverlay(boolean isLaunched) {
+        hideOverlays();
+        mSettingsOnBackPressedCallback.remove();
+        if (!isLaunched) {
+            mSettingsActivityResult.launch(null);
+        }
+    }
+
+    private void hideOverlays() {
+        mToolbar.setVisibility(GONE);
+        mSetWallpaperButton.setVisibility(GONE);
+        mWallpaperControlButtonGroup.setVisibility(GONE);
+        // remove callback to prevent overlay from showing again after floating sheet collapses
+        mFloatingSheet.removeFloatingSheetCallback(mShowOverlayOnHideFloatingSheetCallback);
+        mFloatingSheet.setVisibility(GONE);
+        // deselects all control buttons and sets floating sheet to collapse
+        mWallpaperControlButtonGroup.deselectAllFloatingSheetControlButtons();
+        hideScreenPreviewOverlay(true);
+        mHideOverlaysForShowingSettingsActivity = true;
+    }
+
+    private void showOverlays() {
+        mToolbar.setVisibility(VISIBLE);
+        mSetWallpaperButton.setVisibility(VISIBLE);
+        mWallpaperControlButtonGroup.setVisibility(VISIBLE);
+        mFloatingSheet.addFloatingSheetCallback(mShowOverlayOnHideFloatingSheetCallback);
+        mFloatingSheet.setVisibility(VISIBLE);
+        hideScreenPreviewOverlay(false);
+        mHideOverlaysForShowingSettingsActivity = false;
+    }
+
+    protected void overrideOnBackPressed(OnBackPressedCallback onBackPressedCallback) {
+        FragmentActivity activity = getActivity();
+        if (activity == null) {
+            return;
+        }
+        activity.getOnBackPressedDispatcher().addCallback(
+                getViewLifecycleOwner(),
+                onBackPressedCallback
+        );
+    }
+
+    @Override
+    public void onSaveInstanceState(@NonNull Bundle outState) {
+        mHasCalledOnSaveInstanceState = true;
+        outState.putBoolean(KEY_TOOLBAR_GONE, mToolbar.getVisibility() == GONE);
+        super.onSaveInstanceState(outState);
+    }
+
+    private void initializeEffectButton(CreativeWallpaperInfo creativeWallpaper, Context context) {
+        if (!creativeWallpaper.doesSupportWallpaperEffects()) {
+            return;
+        }
+
+        sExecutorService.execute(() -> {
+            ArrayList<WallpaperAction> effects = creativeWallpaper.getWallpaperEffects(context);
+            if (effects == null) {
                 return;
             }
-            if (mWallpaperSurfaceCallback.getHomeImageWallpaper() != null) {
-                mWallpaper.getThumbAsset(activity.getApplicationContext())
-                        .loadPreviewImage(activity,
-                                mWallpaperSurfaceCallback.getHomeImageWallpaper(),
-                                getResources().getColor(R.color.secondary_color));
-            }
-            LiveTileOverlay.INSTANCE.detach(thumbnailView.getOverlay());
 
-            setUpLiveWallpaperPreview(mWallpaper, thumbnailView,
-                    new ColorDrawable(getResources().getColor(
-                            R.color.secondary_color, activity.getTheme())));
+            creativeWallpaper.setEffectsToggles(effects);
+            mWallpaperActionSelectionBottomSheetContent =
+                    createWallpaperActionSelectionBottomSheetContent(context, creativeWallpaper);
+            mFloatingSheet.putFloatingSheetContent(FloatingSheet.EFFECTS,
+                    mWallpaperActionSelectionBottomSheetContent);
         });
     }
 
-    private void setUpLiveWallpaperPreview(com.android.wallpaper.model.WallpaperInfo homeWallpaper,
-            ImageView previewView, Drawable thumbnail) {
+    private WallpaperActionSelectionBottomSheetContent
+            createWallpaperActionSelectionBottomSheetContent(Context context,
+            CreativeWallpaperInfo creativeWallpaper) {
+        return new WallpaperActionSelectionBottomSheetContent(context,
+                creativeWallpaper.getEffectsBottomSheetTitle(),
+                creativeWallpaper.getEffectsBottomSheetSubtitle(),
+                creativeWallpaper.getClearActionsUri(),
+                creativeWallpaper.getEffectsToggles(),
+                creativeWallpaper.getCurrentlyAppliedEffectId(),
+                getEffectSwitchListener(context, creativeWallpaper));
+    }
+
+    @Override
+    public void onViewStateRestored(@Nullable Bundle savedInstanceState) {
+        mHasCalledOnSaveInstanceState = false;
+        if (mWallpaper instanceof CreativeWallpaperInfo) {
+            Context context = requireContext();
+            CreativeWallpaperInfo creativeWallpaper = (CreativeWallpaperInfo) mWallpaper;
+            boolean isSettingsActivityPresent = savedInstanceState != null
+                    && savedInstanceState.getBoolean(KEY_TOOLBAR_GONE, false);
+            initializeEffectButton(creativeWallpaper, context);
+            if (savedInstanceState == null) {
+                // First time at Fragment should initialize wallpaper preview.
+                creativeWallpaper.initializeWallpaperPreview(context);
+
+            }
+
+            if (savedInstanceState == null || isSettingsActivityPresent) {
+                // First time at Fragment or settings activity is at present.
+                if (!creativeWallpaper.isApplied(WallpaperManager.getInstance(
+                        context).getWallpaperInfo())
+                        && !creativeWallpaper.canBeDeleted()) {
+                    // If it cannot be deleted, we must be creating a new one, launch settings.
+                    // savedInstanceState != null means is rotate state and previous fragment
+                    // already launch settings.
+                    launchSettingsAsOverlay(/* isLaunched= */ savedInstanceState != null);
+                } else if (isSettingsActivityPresent) {
+                    hideOverlays();
+                    mSettingsOnBackPressedCallback.remove();
+                }
+
+            } else {
+                showOverlays();
+                overrideOnBackPressed(mSettingsOnBackPressedCallback);
+            }
+        }
+        super.onViewStateRestored(savedInstanceState);
+    }
+
+    @Override
+    public void onDestroy() {
+        // Clean up the surface view
+        if (mWallpaperConnection != null) {
+            mWallpaperConnection.destroy();
+            mWallpaperConnection = null;
+        }
+        mWallpaperSurfaceCallback.cleanUp();
+        mWallpaperSurface.getHolder().removeCallback(mWallpaperSurfaceCallback);
+
+        if (mWallpaper instanceof CreativeWallpaperInfo) {
+            if (!mHasCalledOnSaveInstanceState) {
+                // onDestroy without rotation should clean up wallpaper preview.
+                ((CreativeWallpaperInfo) mWallpaper).cleanUpWallpaperPreview(getContext());
+            }
+        }
+        super.onDestroy();
+    }
+
+    private void previewLiveWallpaper() {
+        mWallpaperSurface.post(() -> {
+            ImageView homeImageWallpaper = mWallpaperSurfaceCallback.getHomeImageWallpaper();
+            if (homeImageWallpaper != null) {
+                loadPreviewImage(homeImageWallpaper);
+            }
+            setUpLiveWallpaperPreview(mWallpaper);
+        });
+    }
+
+    protected void loadPreviewImage(ImageView homeImageWallpaper) {
+        Context context = getContext();
+        Context appContext = context != null ? context.getApplicationContext() : null;
+        Activity activity = getActivity();
+        if (activity == null || appContext == null) {
+            return;
+        }
+        mWallpaperSurfaceCallback.setHomeImageWallpaperBlur(true);
+        ColorInfo colorInfo = getColorInfo();
+        Integer placeholderColor = colorInfo.getPlaceholderColor();
+        // This is for showing a lower resolution image before the live wallpaper shows
+        WallpaperPreviewBitmapTransformation transformation =
+                new WallpaperPreviewBitmapTransformation(appContext, RtlUtils.isRtl(context));
+        mWallpaper.getThumbAsset(activity.getApplicationContext())
+                .loadLowResDrawable(activity,
+                        homeImageWallpaper,
+                        placeholderColor != null
+                                ? placeholderColor
+                                : ResourceUtils.getColorAttr(activity,
+                                        android.R.attr.colorBackground),
+                        transformation);
+    }
+
+    private ColorInfo getColorInfo() {
+        try {
+            return mColorFuture.get(50, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException | ExecutionException | TimeoutException e) {
+            Log.i(TAG, "Couldn't obtain placeholder color", e);
+        }
+        return new ColorInfo(new WallpaperColors(Color.valueOf(Color.TRANSPARENT),
+                /* secondaryColor= */ null, /* tertiaryColor= */ null),
+                /* placeholderColor= */ null);
+    }
+
+    protected void setUpLiveWallpaperPreview(
+            com.android.wallpaper.model.WallpaperInfo homeWallpaper) {
         Activity activity = getActivity();
         if (activity == null || activity.isFinishing()) {
             return;
         }
+
         if (mWallpaperConnection != null) {
             mWallpaperConnection.disconnect();
         }
-        if (thumbnail != null) {
-            thumbnail.setBounds(previewView.getLeft(), previewView.getTop(), previewView.getRight(),
-                    previewView.getBottom());
-        }
 
         if (WallpaperConnection.isPreviewAvailable()) {
-            repositionPreview(previewView);
+            android.app.WallpaperInfo info = homeWallpaper.getWallpaperComponent();
+            Intent wallpaperIntent = new Intent(WallpaperService.SERVICE_INTERFACE)
+                    .setClassName(info.getPackageName(), info.getServiceName());
             mWallpaperConnection = new WallpaperConnection(
-                    getWallpaperIntent(homeWallpaper.getWallpaperComponent()),
+                    wallpaperIntent,
                     activity,
-                    /* listener= */ this,
-                    mPreviewGlobalRect);
+                    new WallpaperConnection.WallpaperConnectionListener() {
+                        @Override
+                        public void onEngineShown() {
+                            Activity activity = getActivity();
+                            if (activity == null) {
+                                return;
+                            }
+                            ImageView homeImageWallpaper =
+                                    mWallpaperSurfaceCallback.getHomeImageWallpaper();
+                            if (homeImageWallpaper != null) {
+                                homeImageWallpaper.animate()
+                                        .setStartDelay(250)
+                                        .setDuration(250)
+                                        .alpha(0f)
+                                        .setInterpolator(PreviewFragment.ALPHA_OUT)
+                                        .start();
+                            }
+                        }
 
-            LiveTileOverlay.INSTANCE.update(new RectF(mPreviewLocalRect),
-                    ((CardView) previewView.getParent()).getRadius());
-
+                        @Override
+                        public void onWallpaperColorsChanged(WallpaperColors colors,
+                                int displayId) {
+                            LivePreviewFragment.super.onWallpaperColorsChanged(colors);
+                        }
+                    },
+                    mWallpaperSurface, null, mIsViewAsHome
+                    ? WallpaperManager.FLAG_SYSTEM : WallpaperManager.FLAG_LOCK,
+                    mIsAssetIdPresent ? WallpaperConnection.WHICH_PREVIEW.EDIT_NON_CURRENT
+                            : WallpaperConnection.WHICH_PREVIEW.EDIT_CURRENT
+                    );
             mWallpaperConnection.setVisibility(true);
         } else {
             WallpaperColorsLoader.getWallpaperColors(
                     activity,
                     homeWallpaper.getThumbAsset(activity),
-                    mLockScreenPreviewer::setColor);
-        }
-        mLoadingScrim.post(() -> mLoadingScrim.animate()
-                .alpha(0f)
-                .setStartDelay(50)
-                .setDuration(250)
-                .setInterpolator(AnimationUtils.loadInterpolator(getContext(),
-                        android.R.interpolator.fast_out_linear_in))
-                .withEndAction(() -> {
-                    if (mWallpaperConnection != null && !mWallpaperConnection.connect()) {
-                        mWallpaperConnection = null;
-                        LiveTileOverlay.INSTANCE.detach(previewView.getOverlay());
-                    }
-                }));
-    }
-
-    private void renderWorkspaceSurface() {
-        mWorkspaceSurface.setZOrderMediaOverlay(true);
-        mWorkspaceSurface.getHolder().addCallback(mWorkspaceSurfaceCallback);
-    }
-
-    @Override
-    protected void onBottomActionBarReady(BottomActionBar bottomActionBar) {
-        super.onBottomActionBarReady(bottomActionBar);
-        mBottomActionBar.showActionsOnly(INFORMATION, DELETE, CUSTOMIZE, APPLY);
-        mBottomActionBar.setActionClickListener(APPLY, unused -> onSetWallpaperClicked(null));
-        mBottomActionBar.attachViewToBottomSheetAndBindAction(mWallpaperInfoView, INFORMATION);
-
-        // Update target view's accessibility param since it will be blocked by the bottom sheet
-        // when expanded.
-        mBottomActionBar.setAccessibilityCallback(new AccessibilityCallback() {
-            @Override
-            public void onBottomSheetCollapsed() {
-                mPreviewContainer.setImportantForAccessibility(
-                        View.IMPORTANT_FOR_ACCESSIBILITY_YES);
-            }
-
-            @Override
-            public void onBottomSheetExpanded() {
-                mPreviewContainer.setImportantForAccessibility(
-                        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
-            }
-        });
-        final Uri uriSettingsSlice = getSettingsSliceUri(mWallpaper.getWallpaperComponent());
-        if (uriSettingsSlice != null) {
-            View previewPage = LayoutInflater.from(getContext())
-                    .inflate(R.layout.preview_customize_settings, null);
-            mSettingsSliceView = previewPage.findViewById(R.id.settings_slice);
-            mSettingsSliceView.setMode(SliceView.MODE_LARGE);
-            mSettingsSliceView.setScrollable(false);
-            mSettingsLiveData = SliceLiveData.fromUri(requireContext(), uriSettingsSlice);
-            mSettingsLiveData.observeForever(mSettingsSliceView);
-            mBottomActionBar.attachViewToBottomSheetAndBindAction(previewPage, CUSTOMIZE);
-        } else {
-            if (mSettingsIntent != null) {
-                mBottomActionBar.setActionClickListener(CUSTOMIZE, listener ->
-                        startActivity(mSettingsIntent));
-            } else {
-                mBottomActionBar.hideActions(CUSTOMIZE);
-            }
+                    this::onWallpaperColorsChanged);
         }
 
-        final String deleteAction = getDeleteAction(mWallpaper.getWallpaperComponent());
-        if (TextUtils.isEmpty(deleteAction)) {
-            mBottomActionBar.hideActions(DELETE);
-        } else {
-            mBottomActionBar.setActionClickListener(DELETE, listener ->
-                    showDeleteConfirmDialog());
+        if (mWallpaperConnection != null && !mWallpaperConnection.connect()) {
+            mWallpaperConnection = null;
         }
-        mBottomActionBar.show();
-    }
-
-    @Override
-    public void onEngineShown() {
-        Activity activity = getActivity();
-        if (activity == null) {
-            return;
-        }
-
-        mLoadingScrim.post(() -> mLoadingScrim.animate()
-                .alpha(0f)
-                .setDuration(250)
-                .setStartDelay(200)
-                .setInterpolator(AnimationUtils.loadInterpolator(activity,
-                        android.R.interpolator.fast_out_linear_in))
-                .withEndAction(() -> {
-                    if (mLoadingProgressBar != null) {
-                        mLoadingProgressBar.hide();
-                    }
-                    mLoadingScrim.setVisibility(View.GONE);
-                }));
-        final Drawable placeholder = mHomePreview.getDrawable() == null
-                ? new ColorDrawable(getResources().getColor(R.color.secondary_color,
-                activity.getTheme()))
-                : mHomePreview.getDrawable();
-        LiveTileOverlay.INSTANCE.setForegroundDrawable(placeholder);
-        LiveTileOverlay.INSTANCE.attach(mHomePreview.getOverlay());
-        mHomePreview.animate()
-                .setStartDelay(0)
-                .setDuration(150)
-                .setInterpolator(AnimationUtils.loadInterpolator(activity,
-                        android.R.interpolator.fast_out_linear_in))
-                .setUpdateListener(value -> placeholder.setAlpha(
-                        (int) (255 * (1 - value.getAnimatedFraction()))))
-                .withEndAction(() -> {
-                    LiveTileOverlay.INSTANCE.setForegroundDrawable(null);
-                }).start();
-    }
-
-    @Override
-    public void onWallpaperColorsChanged(WallpaperColors colors, int displayId) {
-        mLockScreenPreviewer.setColor(colors);
-    }
-
-    @Override
-    protected boolean isLoaded() {
-        return mWallpaperConnection != null && mWallpaperConnection.isEngineReady();
-    }
-
-    @SuppressLint("NewApi") //Already checking with isAtLeastQ
-    protected Uri getSettingsSliceUri(android.app.WallpaperInfo info) {
-        if (BuildCompat.isAtLeastQ()) {
-            return info.getSettingsSliceUri();
-        }
-        return null;
-    }
-
-    @Override
-    protected int getLayoutResId() {
-        return R.layout.fragment_live_preview_v2;
-    }
-
-    @Override
-    protected int getLoadingIndicatorResId() {
-        return R.id.loading_indicator;
-    }
-
-    @Override
-    protected void setCurrentWallpaper(int destination) {
-        mWallpaperSetter.setCurrentWallpaper(getActivity(), mWallpaper, null,
-                destination, 0, null, new SetWallpaperCallback() {
-                    @Override
-                    public void onSuccess(com.android.wallpaper.model.WallpaperInfo wallpaperInfo) {
-                        finishActivity(/* success= */ true);
-                    }
-
-                    @Override
-                    public void onError(@Nullable Throwable throwable) {
-                        showSetWallpaperErrorDialog(destination);
-                    }
-                });
-    }
-
-    @Nullable
-    protected String getDeleteAction(android.app.WallpaperInfo wallpaperInfo) {
-        android.app.WallpaperInfo currentInfo =
-                WallpaperManager.getInstance(requireContext()).getWallpaperInfo();
-        ServiceInfo serviceInfo = wallpaperInfo.getServiceInfo();
-        if (!isPackagePreInstalled(serviceInfo.applicationInfo)) {
-            Log.d(TAG, "This wallpaper is not pre-installed: " + serviceInfo.name);
-            return null;
-        }
-
-        ServiceInfo currentService = currentInfo == null ? null : currentInfo.getServiceInfo();
-        // A currently set Live wallpaper should not be deleted.
-        if (currentService != null && TextUtils.equals(serviceInfo.name, currentService.name)) {
-            return null;
-        }
-
-        final Bundle metaData = serviceInfo.metaData;
-        if (metaData != null) {
-            return metaData.getString(KEY_ACTION_DELETE_LIVE_WALLPAPER);
-        }
-        return null;
-    }
-
-    @Override
-    public void onStart() {
-        super.onStart();
-        previewLiveWallpaper(mHomePreview);
     }
 
     @Override
@@ -558,38 +616,45 @@ public class LivePreviewFragment extends PreviewFragment implements
     public void onPause() {
         super.onPause();
         if (mWallpaperConnection != null) {
-            mWallpaperConnection.setVisibility(false);
+            mWallpaperConnection.setVisibility(mHideOverlaysForShowingSettingsActivity);
         }
     }
 
-    @Override
-    public void onStop() {
-        super.onStop();
-        if (mWallpaperConnection != null) {
-            mWallpaperConnection.disconnect();
-            mWallpaperConnection = null;
-        }
-    }
-
-    private void showDeleteConfirmDialog() {
+    protected void showDeleteConfirmDialog(Runnable deleteRunnable) {
         final AlertDialog alertDialog = new AlertDialog.Builder(getContext())
                 .setMessage(R.string.delete_wallpaper_confirmation)
-                .setOnDismissListener(dialog -> mBottomActionBar.deselectAction(DELETE))
+                .setOnDismissListener(dialog -> mWallpaperControlButtonGroup.setChecked(
+                        WallpaperControlButtonGroup.DELETE, false))
                 .setPositiveButton(R.string.delete_live_wallpaper,
-                        (dialog, which) -> deleteLiveWallpaper())
+                        (dialog, which) -> {
+                            deleteRunnable.run();
+                            finishActivityWithFadeTransition();
+                        })
                 .setNegativeButton(android.R.string.cancel, null /* listener */)
                 .create();
         alertDialog.show();
     }
 
-    private void deleteLiveWallpaper() {
-        if (mDeleteIntent != null) {
-            requireContext().startService(mDeleteIntent);
-            finishActivity(/* success= */ false);
+    @Nullable
+    private Intent getSettingsActivityIntent(Context context, WallpaperInfo info) {
+        String settingsActivity = info.getSettingsActivity();
+        if (context == null || settingsActivity == null) {
+            return null;
         }
+        Intent intent = new Intent();
+        intent.setComponent(
+                new ComponentName(info.getPackageName(), settingsActivity));
+        intent.putExtra(WallpaperSettingsActivity.EXTRA_PREVIEW_MODE, true);
+        PackageManager pm = context.getPackageManager();
+        ActivityInfo activityInfo = intent.resolveActivityInfo(pm, 0);
+        if (activityInfo == null) {
+            Log.i(TAG, "Couldn't find wallpaper settings activity: " + settingsActivity);
+            return null;
+        }
+        return intent;
     }
 
-    private boolean isPackagePreInstalled(ApplicationInfo info) {
-        return info != null && (info.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
+    private Uri getSettingsSliceUri(android.app.WallpaperInfo info) {
+        return info.getSettingsSliceUri();
     }
 }

@@ -32,7 +32,6 @@ import com.android.wallpaper.model.Category;
 import com.android.wallpaper.model.CategoryProvider;
 import com.android.wallpaper.model.CategoryReceiver;
 import com.android.wallpaper.model.DefaultWallpaperInfo;
-import com.android.wallpaper.model.DesktopCustomCategory;
 import com.android.wallpaper.model.ImageCategory;
 import com.android.wallpaper.model.LegacyPartnerWallpaperInfo;
 import com.android.wallpaper.model.LiveWallpaperInfo;
@@ -42,7 +41,6 @@ import com.android.wallpaper.model.ThirdPartyAppCategory;
 import com.android.wallpaper.model.ThirdPartyLiveWallpaperCategory;
 import com.android.wallpaper.model.WallpaperCategory;
 import com.android.wallpaper.model.WallpaperInfo;
-import com.android.wallpaper.module.FormFactorChecker.FormFactor;
 import com.android.wallpaper.module.NetworkStatusNotifier.NetworkStatus;
 
 import org.xmlpull.v1.XmlPullParser;
@@ -69,11 +67,14 @@ public class DefaultCategoryProvider implements CategoryProvider {
      * Relative category priorities. Lower numbers correspond to higher priorities (i.e., should
      * appear higher in the categories list).
      */
-    private static final int PRIORITY_MY_PHOTOS = 1;
+    public static final int PRIORITY_MY_PHOTOS_WHEN_CREATIVE_WALLPAPERS_DISABLED = 1;
+    private static final int PRIORITY_MY_PHOTOS_WHEN_CREATIVE_WALLPAPERS_ENABLED = 51;
     private static final int PRIORITY_SYSTEM = 100;
     private static final int PRIORITY_ON_DEVICE = 200;
     private static final int PRIORITY_LIVE = 300;
     private static final int PRIORITY_THIRD_PARTY = 400;
+    public static final int CREATIVE_CATEGORY_PRIORITY = 1;
+
     protected static List<Category> sSystemCategories;
 
     protected final Context mAppContext;
@@ -142,12 +143,50 @@ public class DefaultCategoryProvider implements CategoryProvider {
     }
 
     @Override
-    public void resetIfNeeded() {
+    public boolean resetIfNeeded() {
         if (mNetworkStatus != mNetworkStatusNotifier.getNetworkStatus()
                 || mLocale != getLocale()) {
             mCategories.clear();
             mFetchedCategories = false;
+            return true;
         }
+        return false;
+    }
+
+    /**
+     * This function returns the value of priority of MyPhotos depending on whether
+     * the CreativeWallpaperFlag is enabled or not
+     * @param context
+     * @return the value of priority of MyPhotos
+     */
+    public static int getPriorityMyPhotos(Context context) {
+        boolean isCreativeWallpaperFlagEnabled = InjectorProvider.getInjector().getFlags()
+                .isAIWallpaperEnabled(context);
+        if (isCreativeWallpaperFlagEnabled) {
+            return PRIORITY_MY_PHOTOS_WHEN_CREATIVE_WALLPAPERS_ENABLED;
+        } else
+            return PRIORITY_MY_PHOTOS_WHEN_CREATIVE_WALLPAPERS_DISABLED;
+    }
+
+    /**
+     * Returns an appropriate "my photos" custom photo category for the given device form factor.
+     */
+    private static Category getMyPhotosCategory(Context context) {
+        return new ImageCategory(
+                context.getString(R.string.my_photos_category_title),
+                context.getString(R.string.image_wallpaper_collection_id),
+                getPriorityMyPhotos(context),
+                R.drawable.wallpaperpicker_emptystate /* overlayIconResId */);
+    }
+
+    @Override
+    public boolean isFeaturedCollectionAvailable() {
+        return false;
+    }
+
+    @Override
+    public boolean isCreativeCategoryAvailable() {
+        return false;
     }
 
     protected void doFetch(final CategoryReceiver receiver, boolean forceRefresh) {
@@ -177,25 +216,22 @@ public class DefaultCategoryProvider implements CategoryProvider {
      * the receiver.
      */
     protected static class FetchCategoriesTask extends AsyncTask<Void, Category, Void> {
-        private CategoryReceiver mReceiver;
+        protected final CategoryReceiver mReceiver;
+        private PartnerProvider mPartnerProvider;
         protected final Context mAppContext;
-        protected final PartnerProvider mPartnerProvider;
 
         public FetchCategoriesTask(CategoryReceiver receiver, Context context) {
             mReceiver = receiver;
             mAppContext = context.getApplicationContext();
-            mPartnerProvider = InjectorProvider.getInjector().getPartnerProvider(
-                    mAppContext);
         }
 
         @Override
         protected Void doInBackground(Void... voids) {
-            FormFactorChecker formFactorChecker =
-                    InjectorProvider.getInjector().getFormFactorChecker(mAppContext);
-            @FormFactor int formFactor = formFactorChecker.getFormFactor();
+            mPartnerProvider = InjectorProvider.getInjector().getPartnerProvider(
+                    mAppContext);
 
             // "My photos" wallpapers
-            publishProgress(getMyPhotosCategory(formFactor));
+            publishProgress(getMyPhotosCategory(mAppContext));
 
             publishDeviceCategories();
 
@@ -217,13 +253,11 @@ public class DefaultCategoryProvider implements CategoryProvider {
                 }
             }
 
-            // Third party apps -- only on mobile.
-            if (formFactor == FormFactorChecker.FORM_FACTOR_MOBILE) {
-                List<ThirdPartyAppCategory> thirdPartyApps = ThirdPartyAppCategory.getAll(
-                        mAppContext, PRIORITY_THIRD_PARTY, getExcludedThirdPartyPackageNames());
-                for (ThirdPartyAppCategory thirdPartyApp : thirdPartyApps) {
-                    publishProgress(thirdPartyApp);
-                }
+            // Third party apps.
+            List<ThirdPartyAppCategory> thirdPartyApps = ThirdPartyAppCategory.getAll(
+                    mAppContext, PRIORITY_THIRD_PARTY, getExcludedThirdPartyPackageNames());
+            for (ThirdPartyAppCategory thirdPartyApp : thirdPartyApps) {
+                publishProgress(thirdPartyApp);
             }
 
             return null;
@@ -307,10 +341,6 @@ public class DefaultCategoryProvider implements CategoryProvider {
                                 || parser.getDepth() > categoryDepth)
                                 && type != XmlPullParser.END_DOCUMENT) {
                             if (type == XmlPullParser.START_TAG) {
-                                if (!publishedPlaceholder) {
-                                    publishProgress(categoryBuilder.buildPlaceholder());
-                                    publishedPlaceholder = true;
-                                }
                                 WallpaperInfo wallpaper = null;
                                 if (SystemStaticWallpaperInfo.TAG_NAME.equals(parser.getName())) {
                                     wallpaper = SystemStaticWallpaperInfo
@@ -324,12 +354,19 @@ public class DefaultCategoryProvider implements CategoryProvider {
                                 }
                                 if (wallpaper != null) {
                                     categoryBuilder.addWallpaper(wallpaper);
+                                    // Publish progress only if there's at least one wallpaper
+                                    if (!publishedPlaceholder) {
+                                        publishProgress(categoryBuilder.buildPlaceholder());
+                                        publishedPlaceholder = true;
+                                    }
                                 }
                             }
                         }
                         WallpaperCategory category = categoryBuilder.build();
-                        categories.add(category);
-                        publishProgress(category);
+                        if (!category.getUnmodifiableWallpapers().isEmpty()) {
+                            categories.add(category);
+                            publishProgress(category);
+                        }
                     }
                 }
             } catch (IOException | XmlPullParserException e) {
@@ -367,32 +404,6 @@ public class DefaultCategoryProvider implements CategoryProvider {
                     mAppContext.getString(R.string.on_device_wallpaper_collection_id),
                     onDeviceWallpapers,
                     PRIORITY_ON_DEVICE);
-        }
-
-        private Category getDesktopOnDeviceCategory() {
-            List<WallpaperInfo> onDeviceWallpapers = new ArrayList<>();
-
-            DefaultWallpaperInfo defaultWallpaperInfo = new DefaultWallpaperInfo();
-            onDeviceWallpapers.add(defaultWallpaperInfo);
-
-            return new DesktopCustomCategory(
-                    mAppContext.getString(R.string.on_device_wallpapers_category_title_desktop),
-                    mAppContext.getString(R.string.on_device_wallpaper_collection_id),
-                    onDeviceWallpapers,
-                    PRIORITY_MY_PHOTOS);
-        }
-
-        /**
-         * Returns an appropriate "my photos" custom photo category for the given device form factor.
-         */
-        private Category getMyPhotosCategory(@FormFactor int formFactor) {
-            return formFactor == FormFactorChecker.FORM_FACTOR_DESKTOP
-                    ? getDesktopOnDeviceCategory()
-                    : new ImageCategory(
-                    mAppContext.getString(R.string.my_photos_category_title),
-                    mAppContext.getString(R.string.image_wallpaper_collection_id),
-                    PRIORITY_MY_PHOTOS,
-                    R.drawable.myphotos_empty_tile_illustration /* overlayIconResId */);
         }
 
         @Override

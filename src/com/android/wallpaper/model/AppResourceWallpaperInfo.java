@@ -65,6 +65,7 @@ public class AppResourceWallpaperInfo extends WallpaperInfo {
     }
 
     private AppResourceWallpaperInfo(Parcel in) {
+        super(in);
         mPackageName = in.readString();
         mThumbRes = in.readInt();
         mFullRes = in.readInt();
@@ -147,8 +148,9 @@ public class AppResourceWallpaperInfo extends WallpaperInfo {
 
     @Override
     public void showPreview(Activity srcActivity, InlinePreviewIntentFactory factory,
-                            int requestCode) {
-        srcActivity.startActivityForResult(factory.newIntent(srcActivity, this), requestCode);
+                            int requestCode, boolean isAssetIdPresent) {
+        srcActivity.startActivityForResult(factory.newIntent(srcActivity, this,
+                isAssetIdPresent), requestCode);
     }
 
     @Override
@@ -181,6 +183,7 @@ public class AppResourceWallpaperInfo extends WallpaperInfo {
 
     @Override
     public void writeToParcel(Parcel parcel, int i) {
+        super.writeToParcel(parcel, i);
         parcel.writeString(mPackageName);
         parcel.writeInt(mThumbRes);
         parcel.writeInt(mFullRes);

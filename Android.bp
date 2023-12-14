@@ -17,22 +17,40 @@
 //
 // Build rule for WallpaperPicker2 dependencies lib.
 //
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
 android_library {
     name: "wallpaper-common-deps",
 
     static_libs: [
+        "androidx.activity_activity-ktx",
         "androidx.appcompat_appcompat",
         "androidx.cardview_cardview",
+        "androidx-constraintlayout_constraintlayout",
         "androidx.exifinterface_exifinterface",
+        "androidx.lifecycle_lifecycle-livedata-ktx",
+        "androidx.lifecycle_lifecycle-runtime-ktx",
         "androidx.recyclerview_recyclerview",
         "androidx.slice_slice-view",
-        "androidx-constraintlayout_constraintlayout",
+        "androidx.transition_transition-ktx-nodeps",
+        "androidx.viewpager2_viewpager2",
+        "androidx.navigation_navigation-ui-ktx",
+        "androidx.navigation_navigation-fragment-ktx",
         "com.google.android.material_material",
         "glide-prebuilt",
+        "glide-gifdecoder-prebuilt",
+        "glide-disklrucache-prebuilt",
+        "kotlinx-coroutines-android",
+        "kotlinx-coroutines-core",
         "libbackup",
+        "SettingsLibCollapsingToolbarBaseActivity",
         "subsampling-scale-image-view",
         "SystemUISharedLib",
+        "SystemUICustomizationLib",
         "volley",
+        "SettingsLibActivityEmbedding",
     ],
 
     resource_dirs: ["res"],
@@ -41,13 +59,15 @@ android_library {
         enabled: false,
     },
 
+    kotlincflags: ["-Xjvm-default=enable"],
+
     sdk_version: "current",
 
     manifest: "AndroidManifest-empty.xml",
 
     visibility: [
         ":__subpackages__",
-        "//packages/apps/ThemePicker",
+        "//packages/apps/ThemePicker:__subpackages__",
         "//vendor:__subpackages__",
     ],
 }
@@ -60,6 +80,16 @@ filegroup {
     ],
 }
 
+// If these targets are included in WallpaperPicker2_defaults directly instead of in a filegroup,
+// the tests can't find them.
+filegroup {
+    name: "WallpaperPicker2_src_overrides",
+    srcs: [
+        "src_override/**/*.java",
+        "src_override/**/*.kt",
+    ],
+}
+
 genrule {
    name: "WallpaperPicker2_res",
    tools: ["soong_zip"],
@@ -69,21 +99,28 @@ genrule {
    out: ["wallpaperpicker2_res.zip"],
    cmd: "INPUTS=($(in)) && "
        + "RES_DIR=$$(dirname $$(dirname $${INPUTS[0]})) && "
-       + "$(location soong_zip) -o $(out) -C $$RES_DIR -D $$RES_DIR && "
-       + "cp $(out) ."
+       + "$(location soong_zip) -o $(out) -C $$RES_DIR -D $$RES_DIR"
 }
 
+filegroup {
+    name: "WallpaperPicker2_Manifest",
+    srcs: [
+        "AndroidManifest.xml",
+    ],
+}
+
+// Common defaults that doesn't have WallpaperPicker2 specifics.
 java_defaults {
-    name: "WallpaperPicker2_defaults",
+    name: "WallpaperPicker2_common_defaults",
 
     static_libs: [
         "wallpaper-common-deps",
+        "monet",
+        "hilt_android",
     ],
 
     srcs: [
         ":WallpaperPicker2_srcs",
-        "src_override/**/*.java",
-        "src_override/**/*.kt",
     ],
     resource_zips: [":WallpaperPicker2_res"],
 
@@ -93,12 +130,39 @@ java_defaults {
         enabled: false,
     },
 
+    kotlincflags: ["-Xjvm-default=enable"],
     privileged: true,
     system_ext_specific: true,
 
     use_embedded_native_libs: true,
+}
 
-    manifest: "AndroidManifest.xml",
+java_defaults {
+    name: "WallpaperPicker2_defaults",
+
+    static_libs: [
+        "wallpaper-common-deps",
+        "monet",
+        "hilt_android",
+    ],
+
+    srcs: [
+        ":WallpaperPicker2_srcs",
+        ":WallpaperPicker2_src_overrides",
+    ],
+    resource_zips: [":WallpaperPicker2_res"],
+
+    certificate: "",
+
+    optimize: {
+        enabled: false,
+    },
+
+    kotlincflags: ["-Xjvm-default=enable"],
+    privileged: true,
+    system_ext_specific: true,
+
+    use_embedded_native_libs: true,
 }
 
 //
@@ -108,6 +172,8 @@ android_app {
     name: "WallpaperPicker2",
 
     defaults: ["WallpaperPicker2_defaults"],
+    manifest: ":WallpaperPicker2_Manifest",
 
     platform_apis: true,
+    overrides: ["WallpaperPicker"],
 }
